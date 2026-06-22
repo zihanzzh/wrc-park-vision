@@ -1,0 +1,59 @@
+# macOS
+.DS_Store
+
+# Obsidian local workspace settings
+.obsidian/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local environment files
+.env
+.env.*
+
+# Large data directory contents
+data/raw/*
+data/images/*
+data/videos/*
+data/labels/*
+data/exports/*
+
+# Keep lightweight directory notes if needed
+!data/raw/.gitkeep
+!data/raw/README.md
+!data/images/.gitkeep
+!data/images/README.md
+!data/videos/.gitkeep
+!data/videos/README.md
+!data/labels/.gitkeep
+!data/labels/README.md
+!data/exports/.gitkeep
+!data/exports/README.md
+
+# Model weights and exported model files
+*.pt
+*.pth
+*.onnx
+*.rknn
+*.engine
+*.trt
+*.bin
+
+# Experiment outputs
+runs/
+outputs/
+experiments/
+
+# Logs
+*.log
