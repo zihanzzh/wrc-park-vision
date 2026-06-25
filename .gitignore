@@ -23,6 +23,8 @@ ENV/
 .env.*
 
 # Large data directory contents
+datasets_raw/
+datasets_clean/
 data/raw/*
 data/images/*
 data/videos/*
