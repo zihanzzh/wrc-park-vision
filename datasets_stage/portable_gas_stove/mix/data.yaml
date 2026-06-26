@@ -1,5 +1,0 @@
-path: datasets_stage/portable_gas_stove/mix
-train: images/train
-val: images/val
-names:
-  0: portable_gas_stove

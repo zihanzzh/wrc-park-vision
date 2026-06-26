@@ -25,6 +25,7 @@ ENV/
 # Large data directory contents
 datasets_raw/
 datasets_clean/
+datasets_stage/
 data/
 data/raw/*
 data/images/*
