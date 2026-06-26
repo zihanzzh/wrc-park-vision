@@ -8,8 +8,10 @@ import random
 import shutil
 from pathlib import Path
 
+from yolo_common import read_class_names
 
-DEFAULT_DATASET_DIR = Path("datasets_clean/spray_can_yolo11_single_class")
+
+DEFAULT_DATASET_DIR = Path("datasets_clean/spray_can")
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
@@ -29,8 +31,8 @@ def image_files(images_dir: Path) -> list[Path]:
     )
 
 
-def read_boxes(label_path: Path) -> list[tuple[float, float, float, float]]:
-    boxes: list[tuple[float, float, float, float]] = []
+def read_boxes(label_path: Path) -> list[tuple[int, float, float, float, float]]:
+    boxes: list[tuple[int, float, float, float, float]] = []
     for line_number, line in enumerate(label_path.read_text(encoding="utf-8").splitlines(), 1):
         stripped = line.strip()
         if not stripped:
@@ -38,26 +40,54 @@ def read_boxes(label_path: Path) -> list[tuple[float, float, float, float]]:
         parts = stripped.split()
         if len(parts) != 5:
             raise ValueError(f"{label_path}:{line_number} expected 5 fields, got {len(parts)}")
-        if parts[0] != "0":
-            raise ValueError(f"{label_path}:{line_number} expected class id 0, got {parts[0]}")
-        boxes.append(tuple(float(value) for value in parts[1:]))
+        class_id = int(float(parts[0]))
+        boxes.append((class_id, *(float(value) for value in parts[1:])))
     return boxes
 
 
-def draw_preview(image_path: Path, label_path: Path, output_path: Path) -> None:
+def source_prefix(file_name: str) -> str:
+    if "__" not in file_name:
+        return "unknown"
+    return file_name.split("__", 1)[0]
+
+
+def select_preview_images(images: list[Path], max_images: int, seed: int) -> list[Path]:
+    rng = random.Random(seed)
+    groups: dict[str, list[Path]] = {}
+    for image_path in images:
+        groups.setdefault(source_prefix(image_path.name), []).append(image_path)
+
+    for group in groups.values():
+        rng.shuffle(group)
+
+    selected: list[Path] = []
+    prefixes = sorted(groups)
+    while len(selected) < max_images and prefixes:
+        remaining_prefixes: list[str] = []
+        for prefix in prefixes:
+            group = groups[prefix]
+            if group and len(selected) < max_images:
+                selected.append(group.pop())
+            if group:
+                remaining_prefixes.append(prefix)
+        prefixes = remaining_prefixes
+    return sorted(selected, key=lambda path: path.name)
+
+
+def draw_preview(image_path: Path, label_path: Path, output_path: Path, class_names: list[str]) -> None:
     Image, ImageDraw, ImageFont = load_pillow()
     image = Image.open(image_path).convert("RGB")
     draw = ImageDraw.Draw(image)
     width, height = image.size
     font = ImageFont.load_default()
 
-    for center_x, center_y, box_width, box_height in read_boxes(label_path):
+    for class_id, center_x, center_y, box_width, box_height in read_boxes(label_path):
         left = (center_x - box_width / 2) * width
         top = (center_y - box_height / 2) * height
         right = (center_x + box_width / 2) * width
         bottom = (center_y + box_height / 2) * height
         draw.rectangle([left, top, right, bottom], outline=(255, 0, 0), width=3)
-        label = "spray_can"
+        label = class_names[class_id] if 0 <= class_id < len(class_names) else str(class_id)
         text_box = draw.textbbox((left, top), label, font=font)
         draw.rectangle(text_box, fill=(255, 0, 0))
         draw.text((left, top), label, fill=(255, 255, 255), font=font)
@@ -73,15 +103,13 @@ def reset_preview_dir(preview_dir: Path) -> None:
     (preview_dir / "val").mkdir(parents=True, exist_ok=True)
 
 
-def render_split(dataset_dir: Path, split: str, max_images: int, seed: int) -> int:
+def render_split(dataset_dir: Path, split: str, max_images: int, seed: int, class_names: list[str]) -> int:
     images_dir = dataset_dir / "images" / split
     labels_dir = dataset_dir / "labels" / split
     preview_dir = dataset_dir / "previews" / split
 
     images = image_files(images_dir)
-    rng = random.Random(seed)
-    rng.shuffle(images)
-    selected = sorted(images[:max_images], key=lambda path: path.name)
+    selected = select_preview_images(images, max_images, seed)
 
     count = 0
     for image_path in selected:
@@ -89,7 +117,7 @@ def render_split(dataset_dir: Path, split: str, max_images: int, seed: int) -> i
         if not label_path.exists():
             raise FileNotFoundError(f"Missing label for preview image: {image_path}")
         output_path = preview_dir / image_path.name
-        draw_preview(image_path, label_path, output_path)
+        draw_preview(image_path, label_path, output_path, class_names)
         count += 1
     return count
 
@@ -102,9 +130,10 @@ def main() -> int:
     args = parser.parse_args()
 
     load_pillow()
+    class_names = read_class_names(args.dataset_dir / "data.yaml")
     reset_preview_dir(args.dataset_dir / "previews")
-    train_count = render_split(args.dataset_dir, "train", args.max_images, args.seed)
-    val_count = render_split(args.dataset_dir, "val", args.max_images, args.seed)
+    train_count = render_split(args.dataset_dir, "train", args.max_images, args.seed, class_names)
+    val_count = render_split(args.dataset_dir, "val", args.max_images, args.seed, class_names)
     print("Preview images generated.")
     print(f"preview_dir: {args.dataset_dir / 'previews'}")
     print(f"train_previews: {train_count}")

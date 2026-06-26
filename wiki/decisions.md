@@ -105,3 +105,50 @@
 - 日期：2026-06-25
 - 决策：多类别 Roboflow 数据集不能直接进入训练集，必须先过滤和重映射为项目类别。
 - 说明：本次将原始 `spray can` class id `2` 过滤并重映射为项目类别 `spray_can` class id `0`；非目标类别 LED、toilet cleaner 等不进入 clean 数据集。
+
+### D018：datasets_clean/spray_can/ 作为 spray_can canonical clean dataset
+
+- 日期：2026-06-25
+- 决策：`datasets_clean/spray_can/` 作为 `spray_can` 类别的 canonical clean 数据集目录。
+- 说明：后续 `spray_can` 的公开来源、自采数据和人工修正数据，应优先合并到该目录对应的数据构建流程中。
+
+### D019：同一物品类别的多个公开来源合并到类别级 clean 目录
+
+- 日期：2026-06-25
+- 决策：同一物品类别的多个公开来源不再长期拆成多个 clean 目录，而是合并到该物品自己的 canonical clean 目录。
+- 说明：可以保留 raw 来源和清洗脚本，clean 输出采用简单稳定命名，方便训练配置和 Obsidian 记录。
+
+### D020：aerosol / spray / spray can 相关来源类别统一映射为 spray_can
+
+- 日期：2026-06-25
+- 决策：来源数据中的 `aerosol`、`spray`、`spray can` 以及明确喷雾商品类，进入本项目时统一映射为 `0: spray_can`。
+- 说明：不把明显非喷雾罐类别强行映射为 `spray_can`；对于 polygon / segmentation 来源，需先确认是否转换为 bbox 再进入 object detection 训练集。
+
+### D021：segmentation / polygon 数据可转换为 bbox 后作为 detection 数据候选
+
+- 日期：2026-06-25
+- 决策：明确属于目标类别的 segmentation / polygon 标注，可以通过外接 bbox 转换为 YOLO detection 训练数据候选。
+- 说明：转换数据必须经过 preview 人工检查，确认 bbox 是否过松、类别是否正确、是否适合当前比赛场景后，再决定是否长期保留在训练集。
+
+### D022：spray_can 只保留 canonical clean dataset 和当前数据工具
+
+- 日期：2026-06-25
+- 决策：`spray_can` 当前只保留 `datasets_clean/spray_can/` 作为 canonical clean dataset，删除早期 `datasets_clean/spray_can_yolo11_single_class/` 中间目录。
+- 说明：早期单源过滤、旧 train / val 划分脚本和 `merge_spray_can_sources.py` 已由模块化通用 YOLO dataset tools 替代。
+
+### D023：dataset_tools 采用通用模块化工具链
+
+- 日期：2026-06-25
+- 决策：`scripts/dataset_tools/` 不再为每个类别长期维护专用合并脚本，改为保留通用工具：`yolo_common.py`、`extract_class_dataset.py`、`merge_class_datasets.py`、`split_train_val.py` 和 `preview_yolo_boxes.py`。
+- 说明：后续 `skateboard`、`portable_gas_stove`、`plastic_bottle` 等类别应复用同一套 extract / merge / split / preview 流程，避免把单个类别的临时逻辑固化为长期入口。
+- 约束：这些工具只负责数据清洗、格式转换、合并、划分、校验和 preview，不负责 YOLO 训练、推理、依赖安装或硬件部署。
+
+### D024：多类别 YOLO 训练集必须显式统一 class id 映射
+
+- 日期：2026-06-25
+- 决策：多类别 YOLO 训练集不能直接拼接多个单类 dataset 的 label，必须显式重映射 class id 并生成新的 `data.yaml`。
+- 当前 3 类禁带品 baseline class 顺序：
+  - `0: spray_can`
+  - `1: skateboard`
+  - `2: portable_gas_stove`
+- 说明：三个单类 clean dataset 内部 class id 都是 `0`，直接拼接会导致所有类别被误认为同一类；因此使用 `merge_multiclass_dataset.py` 生成 `datasets_clean/prohibited_items_3cls/`。

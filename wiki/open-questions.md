@@ -76,6 +76,10 @@
 - Qwen3-VL-32B 是否已经具备运行环境？
 - 是否需要搭建本地标注工具，例如 CVAT、Label Studio 或 LabelImg？
 - Qwen3-VL-32B 输出候选 bbox 的格式如何与标注工具衔接？
+- `roboflow_aerosol_trash_detection` 的 `Aerosol` polygon-to-bbox 数据因明显错框已从 canonical `spray_can` clean dataset 暂时移除；后续是重新人工修正 / 重新标注 Trash 来源，还是直接放弃该来源？
+- `roboflow_taco_aerosol` 的少量 `Aerosol` polygon-to-bbox 数据当前保留；是否长期保留仍需要根据后续人工检查和训练效果决定。
+- `skate_cva2`、`skate_practicas`、`skate_unity` 三个公开 skateboard 来源已合并到 `datasets_clean/skateboard/`；是否全部长期保留，需要根据 preview 人工检查和后续训练效果决定。
+- `stove_butane` 和 `stove_mix` 中的 `Cast Iron Gas Burners`、`Fire_Butane Stove`、`Fire_Gas Stove` 已临时纳入 `portable_gas_stove` clean dataset；是否全部符合“便携卡式炉 / 便携燃气炉本体”定义，需要人工 preview 判断。
 
 ## 比赛与规则
 
