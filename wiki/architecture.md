@@ -1,445 +1,288 @@
 # Architecture
 
-本文件是视觉系统 v0.3 架构草案，用于同步项目负责人提供的“园区管理岗视觉识别整体架构图（大小模型协同方案）”。它不是最终定稿，后续仍需要根据比赛规则、数据、硬件和机器人接口继续迭代。
-
-比赛规则背景详见 [[competition-rules]]。类别清单详见 [[class-list]]。硬件角色详见 [[hardware-notes]]。
-
-## v0.3 核心结论
-
-已确认方向：
-
-- 系统采用边缘小模型快速识别 + 高算力大模型兜底分析的大小模型协同方案。
-- 三个比赛场景需要分别设计流程，不能用同一套简单逻辑覆盖所有任务。
-- 大模型 / VLM 只处理低置信度、遮挡、类别歧义、复杂行为判断和漏检补充，不处理全部视频帧。
-- 大模型请求需要 10 秒超时中断或回退机制，避免比赛流程被大模型阻塞。
-- NVIDIA Thor 作为机器人本体侧主要边缘计算平台，承担比赛现场小模型实时推理和边缘视觉服务。
-- 高算力机器 / 服务器 / 高性能笔记本用于训练、大模型 / VLM 推理、数据预标注、难例分析和模型评估。
-- Mac 用于代码开发、脚本运行、repo / Obsidian 管理和基础环境测试。
-- Orange Pi / RK3588 当前不作为主线最终部署平台，可作为边缘测试板或备用测试设备。
-
-待确认内容：
-
-- Thor 的具体型号、操作系统、CUDA / TensorRT / ROS2 / Docker 环境。
-- 机器人接口最终采用 ROS2 Topic / Service、HTTP / REST API、WebSocket、gRPC 或其他方式。
-- 现场是否允许部署高性能 GPU / VLM，以及是否允许联网。
-- 每个任务的精确识别时间、阈值策略和失败降级策略。
-
-## Runtime Architecture
-
-Runtime Architecture 记录比赛运行时视觉系统如何工作。本阶段只描述设计，不写训练、推理、API 或硬件部署代码。
-
-### 1. 机器人本体侧
-
-已确认方向：
-
-- 机器人本体负责相机采集、图片流管理、移动、语音提醒、垃圾抓取和其他执行动作。
-- Thor 作为机器人本体侧主要边缘计算平台，负责运行边缘视觉服务和小模型实时推理。
-- 视觉系统输出结构化结果，机器人系统根据结果决定语音、移动、抓取或其他动作。
-
-待确认：
-
-- 相机数量、分辨率、帧率和安装位置。
-- 机器人主控与 Thor 的进程边界。
-- 视觉结果如何进入机器人任务状态机。
-
-### 2. 图片输入层
-
-CV 服务接收机器人侧传入的图片，不直接控制相机。
-
-输入建议包含：
-
-- `image`：图片或图片引用。
-- `cameraId`：相机编号。
-- `frameId`：帧编号。
-- `timestamp`：采集时间。
-- `taskType`：当前任务类型。
-
-`taskType` 示例：
-
-- `forbidden_item_check`。
-- `garbage_detection`。
-- `uncivilized_behavior`。
-
-待确认：
-
-- 输入是单张图片、视频流抽帧，还是机器人系统推送帧。
-- 图片传输方式和压缩格式。
-- `frameId`、`timestamp` 由机器人系统生成，还是由视觉服务补充。
-
-### 3. Thor 边缘小模型层
-
-已确认方向：
-
-- YOLO11n 已在 Mac 本地通过 Ultralytics 预训练模型完成单图 prediction，用于环境验证和最小 baseline。
-- YOLO11m 是项目负责人建议的当前主力小模型候选。
-- YOLO11s 是辅助 / 轻量对比候选，可用于速度、部署压力和准确率对比。
-- 不要把 YOLO11m 写死为最终模型，后续需要通过数据和评估确认。
-
-小模型主要负责：
-
-- 禁带品。
-- 垃圾。
-- `person`。
-- `bench`。
-- 其他可通过 bbox 表达的辅助目标。
-
-### 4. 可选分割层
-
-可选候选：
-
-- YOLO11-seg。
-- FastSAM。
-
-适用方向：
-
-- 垃圾识别后需要更精确区域时，输出 mask 辅助抓取。
-- 目标区域需要精确定位时，作为 bbox 的补充。
-
-当前结论：
-
-- 第一阶段不强制使用 segmentation。
-- architecture 中保留 segmentation 可能性，等抓取需求和数据情况确认后再决定。
-
-### 5. 多帧跟踪与去重
-
-候选方案：
-
-- ByteTrack。
-- DeepSORT。
-- 其他 tracking 方案。
-
-目标：
-
-- 对连续帧中的同一目标分配 `trackId`。
-- 避免同一目标重复上报。
-- 支持多帧确认，降低单帧误报。
-- 为不文明行为判断提供时间上下文。
-
-待确认：
-
-- 是否需要 tracking。
-- 使用哪种 tracking 方案。
-- 多帧窗口大小和确认条件。
-
-### 6. 置信度评估与分级
-
-需要将小模型结果按置信度和风险分级处理。
-
-初步分级：
-
-- 高置信度：直接采用小模型结果，但仍可经过多帧确认和去重。
-- 中置信度：请求大模型 / VLM 复核。
-- 低置信度：进入疑似 / 不确定状态，不阻塞比赛流程。
-
-设计原则：
-
-- 避免单帧低置信度结果直接触发机器人动作。
-- 禁带品和不文明行为属于高风险提醒场景，需要更保守。
-- 垃圾识别可以根据任务风险和抓取需求调整阈值。
-
-待确认：
-
-- 各任务 confidence 阈值。
-- 高 / 中 / 低置信度分界。
-- 不同类别是否需要不同阈值。
-
-### 7. 大模型 / VLM 兜底层
-
-候选方向：
-
-- Qwen2.5-VL。
-- InternVL。
-- 其他可用多模态模型。
-
-主要用途：
-
-- 物品复核。
-- 行为识别。
-- 漏检补充。
-- 遮挡、类别歧义和复杂上下文判断。
-
-处理方式：
-
-- 不处理所有视频帧。
-- 物品任务可使用目标裁剪图。
-- 行为任务可能需要完整关键帧或连续多帧。
-- 与小模型冲突时，进入结果融合和风险控制，不直接触发高风险动作。
-
-待确认：
-
-- 是否允许现场使用 VLM。
-- VLM 在本地、高算力服务器还是高性能笔记本上运行。
-- VLM 是否允许联网。
-- VLM 响应延迟是否满足比赛节奏。
-
-### 8. 10 秒超时机制
-
-已确认方向：
-
-- 大模型请求必须设置 10 秒内返回或超时中断机制。
-- 如果大模型超过 10 秒仍未返回，系统应中断或回退。
-- 超时不能阻塞机器人继续流程。
-
-可选回退策略：
-
-- 使用小模型高置信度结果。
-- 将结果标记为 `suspected` 或 `uncertain`。
-- 记录样本进入日志回流。
-- 机器人执行保守策略，避免高风险误提示。
-
-待确认：
-
-- 10 秒超时由视觉服务、机器人调度层，还是大模型调用层控制。
-- 超时后的机器人动作策略。
-
-### 9. 结果融合层
-
-结果融合层整合：
-
-- 小模型结果。
-- 大模型复核结果。
-- 规则判断。
-- tracking 去重结果。
-
-输出状态示例：
-
-- `confirmed`：确认结果，可用于触发相对明确的机器人动作。
-- `suspected`：疑似结果，建议保守提示或继续观察。
-- `uncertain`：不确定结果，不应直接触发高风险动作。
-
-融合原则：
-
-- 小模型和大模型冲突时，不应直接触发高风险动作。
-- 禁带品和不文明行为需要优先控制误报。
-- 垃圾识别需要同时考虑类别和位置是否足够支持后续抓取。
-
-### 10. 结果输出层
-
-输出内容可以包含：
-
-- `frameId`。
-- `taskType`。
-- `class`。
-- `bbox`。
-- `mask`。
-- `confidence`。
-- `status`。
-- `source`。
-- `trackId`。
-- `suggestedAction`。
-
-接口候选：
-
-- ROS2 Topic / Service。
-- HTTP / REST API。
-- WebSocket。
-- gRPC。
-
-最终方式待确认。当前不要在接口未确认前写死通信协议。
-
-### 11. 日志和数据回流层
-
-需要保存：
-
-- 误报样本。
-- 漏报样本。
-- 低置信度样本。
-- 疑难样本。
-- 大模型超时样本。
-- 小模型与大模型冲突样本。
-
-用途：
-
-- 补充训练数据。
-- 分析难例。
-- 调整类别定义。
-- 评估模型误报和漏报。
-- 支持后续模型迭代。
-
-## 三个任务场景的视觉流程
-
-### 场景一：禁带品检查
-
-场景特点：
-
-- 入园人员推行露营车通过安检区。
-- 露营车在安检区短暂停留，大约 10 秒。
-- 核心风险是误报和漏报，不能把普通物品误判为禁带品。
-
-初步流程：
-
-1. 根据 `taskType=forbidden_item_check` 进入禁带品流程。
-2. Thor 上的小模型快速检测禁带品候选。
-3. 多帧确认高置信度结果，并对同一目标去重。
-4. 低置信度或疑似目标裁剪后请求大模型 / VLM 复核。
-5. 大模型请求必须在 10 秒内返回，否则超时中断或回退。
-6. 输出禁带品清单、位置、置信度和语音提示建议。
-
-输出建议：
-
-- 禁带品类别。
-- `bbox`。
-- `confidence`。
-- `status`。
-- `trackId`。
-- 语音提示建议。
-
-### 场景二：不文明行为识别
-
-场景特点：
-
-- 不应简单当作 object detection。
-- 需要判断人和场景之间的关系。
-- 疑难判断更适合交给 VLM 或规则层复核。
-
-需要关注：
-
-- `person`。
-- `bench`。
-- 草坪 / 消防通道区域。
-- 可能的动作 / 姿态线索。
-- 多帧时序信息。
-
-初步流程：
-
-1. 根据 `taskType=uncivilized_behavior` 进入行为识别流程。
-2. 小模型检测 `person`、`bench` 和可能的场景区域。
-3. 结合位置关系、姿态 / 动作线索和上下文判断行为。
-4. 疑难场景使用完整关键帧或连续多帧请求 VLM / 规则层复核。
-5. 输出行为类别、人员位置、置信度和语音提醒建议。
-
-注意：
-
-- 不要假设单个 YOLO 类别就能完整解决行为识别。
-- 站 / 躺长椅、踩草坪、占用消防通道都需要关系判断。
-
-### 场景三：垃圾识别与分类
-
-场景特点：
-
-- 垃圾可先通过小模型检测类别和位置。
-- 后续抓取可能需要比 bbox 更精确的 mask。
-
-初步流程：
-
-1. 根据 `taskType=garbage_detection` 进入垃圾识别流程。
-2. 小模型检测垃圾类别和位置。
-3. 高置信度结果可直接输出。
-4. 低置信度目标可请求大模型 / VLM 复核。
-5. 如果机器人抓取需要更精确位置，后续引入 YOLO11-seg 或 FastSAM 输出 mask。
-6. 输出垃圾类别、`bbox` / `mask`、位置和分类建议。
-
-## Model Strategy
-
-### YOLO11n
+本文件记录当前共享多模型 Runtime 架构、训练路线和 Thor 交付方向。比赛背景见 [[competition-rules]]，类别定义见 [[class-list]]，设备角色见 [[hardware-notes]]。
+
+## 当前架构结论
+
+当前主线是“多个独立视觉模型 + 共享 Runtime Pipeline + 条件式 Qwen / VLM”：
+
+```text
+Robot sends one image
+  -> Thor runtime receives image
+  -> Run prohibited_items detector
+  -> Run garbage detector
+  -> Run behavior detector or behavior pipeline
+  -> Normalize and merge detections
+  -> Add task_group metadata
+  -> Resolve duplicate/conflicting detections if needed
+  -> High-confidence results return directly
+  -> Low-confidence / occluded / ambiguous cases trigger Qwen / VLM
+  -> Fuse results
+  -> Return within 10 seconds or use fallback response
+```
 
 已确认：
 
-- 已在 Mac 本地通过 Ultralytics 预训练模型完成单图 prediction。
-- 当前用于环境验证和最小 baseline。
+- 当前不是一个统一 YOLO 模型。
+- 禁带品和垃圾分别训练独立 YOLO11m；不文明行为使用后续独立模型或视觉方案。
+- 多个独立模型共享同一个 Runtime Pipeline。
+- 机器人只发送图片，不提供 `taskId`、`taskType`、`mode` 或 `category`。
+- Pipeline 根据模型来源写入 `task_group`，不依赖机器人提供任务类型。
+- 高置信度结果直接返回；Qwen / VLM 只处理低置信度、遮挡或类别歧义样本。
+- 10 秒是完整链路目标；是否满足必须在 Thor 上实测，当前不作未经验证的性能承诺。
 
-当前定位：
+该路线是比赛时间限制下的风险控制方案。数据正确性和可交付性优先于单模型架构的简洁性。
 
-- 不作为当前主力训练模型。
-- 可作为最轻量 baseline 或部署压力参考。
+## Runtime v1 已实现范围
 
-### YOLO11m
+正式 Runtime 代码位于 `src/wrc_park_vision/runtime/`，当前实现链路为：
 
-已确认方向：
+```text
+image path
+  -> 配置、模型路径与 expected_class_names 启动校验
+  -> 图片解码、尺寸校验和 request_id
+  -> sequential 运行全部 enabled task modules
+  -> 单模块异常隔离
+  -> backend 输出转为统一 Observation
+  -> 稳定排序并分配 observation id
+  -> 跨 task_group IoU 冲突标记
+  -> ReviewPolicy 生成 pending / not_required
+  -> PipelineResponse
+  -> result.json
+  -> 使用同一个 PipelineResponse 绘制 preview.jpg
+```
 
-- 项目负责人建议作为主力小模型候选。
-- 后续训练和评估应优先考虑 YOLO11m。
+实现边界：
 
-注意：
+- 当前通过配置注册 `prohibited_items` 和 `garbage` 两个通用 `DetectionModule`，主 Pipeline 不写死模块数量或业务类别。
+- Ultralytics backend 在 Pipeline 初始化时加载一次模型，并立即把 Ultralytics result 转成内部普通对象。
+- enabled detection module 必须配置有序 `expected_class_names`。权重加载后严格比较 class ID 连续性、类别数量、名称和顺序，校验发生在任何图片处理之前。
+- `bbox_xyxy` 是 canonical 像素坐标；`bbox_normalized_xyxy` 从同一个 geometry 计算。
+- Fusion 失败时使用原始 normalized observations 的稳定排序深拷贝作为 fallback；Review 失败时保留 Fusion 结果。只要至少一个模块成功，后处理失败返回 `partial_success`。
+- `Observation.track_id` 已作为可空字段预留，`RequestContext` 支持 ISO 8601 timestamp 和非负 frame index；当前没有实现 Tracking 或多帧融合。
+- schema 已为 `mask`、`pose`、`region` 和 `relation` 预留 observation geometry。
+- TensorRT backend 和 behavior module 当前明确返回未实现错误，不伪造能力。
+- ReviewPolicy 当前只决定是否需要复核，不运行 VLM。
+- 当前只支持单张图片路径 CLI、顺序执行和耗时记录。
+- 当前没有实现 API、ROS2、tracking、并行执行、强制 timeout 或 Thor 部署。
+- Runtime 要求 Python 3.10 或更高版本。
 
-- YOLO11m 不是最终定稿模型。
-- 是否采用需要根据数据、精度、速度、Thor 部署性能和比赛节奏评估。
+## 路线变更原因
 
-### YOLO11s
+原计划曾创建 `unified_detection`，用于将禁带品和垃圾合并为 14 类并训练一个统一 YOLO11m。人工检查其 train / val / test previews 后发现大量 bbox 显示错误，尤其是 `spray_can`。
 
-当前定位：
+当前处理：
 
-- 辅助 / 轻量对比候选。
-- 用于速度、部署压力和准确率对比。
+- `unified_detection` 不得用于训练。
+- 不继续投入主要比赛准备时间修复该合并产物。
+- 原始 `datasets_final/prohibited_items/` 和 `datasets_final/garbage/` 保持为正式、相对可信的数据入口。
+- `unified_detection` 若仍存在，只能标记为 `deprecated` / `investigation`；其在训练机上的物理存在状态待确认。
 
-### YOLO11-seg / FastSAM
+## Runtime Architecture
 
-当前定位：
+### 1. 图片输入层
 
-- 用于分割任务候选。
-- 对垃圾识别、垃圾抓取和目标区域精确定位更有帮助。
-- 第一阶段不强制引入，但需要保留架构可能性。
+机器人向 Thor Runtime 发送一张图片。图片编码、分辨率、传输协议、请求 ID 和时间戳仍待接口联调确认，但请求不包含业务 task type。
 
-### 大模型 / VLM
+Runtime v1 当前负责：
 
-候选方向：
+- 图片解码与输入校验。
+- 将同一图片交给启用的视觉模块。
+- 隔离单模块异常，并返回 `success`、`partial_success` 或 `failure`。
+- 输出统一 JSON 和直接复用最终 observation 的 Preview。
 
-- Qwen2.5-VL。
-- InternVL。
+请求级 10 秒预算、模块 timeout 和降级中断仍是 Thor 阶段待实现能力。
 
-当前定位：
+### 2. Prohibited Items Detector
 
-- 用于低置信度兜底、物品复核、行为判断和漏检补充。
-- 不处理所有视频帧。
-- 必须设置超时和降级机制。
+- 数据入口：`datasets_final/prohibited_items/data.yaml`。
+- 基础权重：`yolo11m.pt`。
+- 训练产物：独立的 prohibited_items YOLO11m。
+- Pipeline 补充：`task_group: prohibited_items`。
+
+`roller_skates` 和 `barbecue_grill` 可能仍为 0 样本或待补充，训练前必须核对 3090 manifest / README。
+
+### 3. Garbage Detector
+
+- 数据入口：`datasets_final/garbage/data.yaml`。
+- 基础权重：`yolo11m.pt`。
+- 训练产物：独立的 garbage YOLO11m。
+- Pipeline 补充：`task_group: garbage`。
+
+垃圾 detector 保持最终 Roboflow `data.yaml` 的 6 类 class id，不重新映射。
+
+### 4. Behavior Module
+
+Runtime 预留独立 behavior module 接口，并补充 `task_group: uncivilized_behavior`。
+
+该模块尚未定型，可能包含：
+
+- 独立 YOLO detector。
+- YOLO segmentation。
+- pose / action 线索。
+- 人与 bench、草坪、消防通道等区域的位置关系。
+- tracking、多帧时序、规则层和 VLM。
+
+不能预设五类不文明行为都能作为普通 object detection 类别直接解决。
+
+### 5. 多模型调度
+
+同一图片当前顺序运行 prohibited detector 和 garbage detector。模块由配置列表注册，后续 behavior module 可按相同接口加入，不需要改写主 Pipeline。
+
+待 Thor benchmark 后决定：
+
+- 是否从当前 sequential 改为并行。
+- 是否按资源情况限制并发。
+- 是否需要模型预热和常驻 engine。
+- behavior module 是否总是运行或采用内部触发条件。
+
+多模型预计会增加计算量，但不能仅凭模型数量推断能否满足 10 秒。
+
+### 6. 结果规范化与 Task Group
+
+每个模型的原始 class id 只在其自身类别空间内有效。共享 Runtime 当前将不同模型结果规范为 snake_case 字段：
+
+- `source.model_id`
+- `task_group`
+- `class_id`
+- `class_name`
+- `geometry.bbox_xyxy`
+- `geometry.bbox_normalized_xyxy`
+- `mask` / `pose` / `region` / `relation`（未来 geometry 类型）
+- `confidence`
+- `review.status`
+- `metadata`
+
+`taskGroup` 来源映射：
+
+- prohibited_items model -> `prohibited_items`
+- garbage model -> `garbage`
+- behavior model / pipeline -> `uncivilized_behavior`
+
+不要求不同模型共享同一全局 class id，也不修改原数据集标签。
+
+### 7. 重复与冲突处理
+
+Runtime v1 采用保守规则：
+
+- 同模型 NMS 由 Ultralytics backend 完成。
+- 不同 `task_group` 的 bbox IoU 达到配置阈值时，两个 observation 均保留。
+- 双方 `conflicts` 记录对方 observation id，类型为 `cross_model_overlap`。
+- 冲突可触发 `review.status: pending`。
+- 不实施类别覆盖、业务优先级或跨模型删除。
+
+后续是否需要置信度校准或业务规则，必须依据真实冲突样本决定。
+
+### 8. 置信度与 Qwen / VLM
+
+- 高置信且无冲突：当前标为 `review.status: not_required`，不是 `confirmed`。
+- 低于 review 阈值或存在跨任务冲突：标为 `review.status: pending`。
+- 模块失败：触发顶层 `review.reasons: [module_failure]`，不伪造 observation。
+- 真正的目标裁剪、VLM 调用、复核回写和超时降级尚未实现。
+
+VLM 不处理所有图片或所有帧。YOLO 推理预计不是主要时间瓶颈，VLM 更可能成为主要延迟来源，但必须通过实际 profiling 验证。
+
+### 9. 10 秒预算与降级
+
+10 秒覆盖图片接收、多个视觉模块、结果规范化、冲突处理、可选 VLM、融合和序列化。
+
+Runtime 应支持：
+
+- 请求级 deadline。
+- 子模型和 VLM 的独立超时。
+- 取消或忽略超时结果。
+- 保留可用的高置信检测。
+- 对未确认结果返回 `suspected` / `uncertain`。
+- 记录各阶段耗时和降级原因。
+
+三模型是否能在 10 秒内完成尚未验证。最终依据 Thor benchmark 决定串行/并行、模型尺寸和触发策略。
+
+### 10. 日志与数据回流
+
+记录：
+
+- 每个模型版本、engine 和耗时。
+- 模型来源与 `task_group`。
+- 误报、漏报、低置信和冲突样本。
+- VLM 请求、超时和复核结果。
+- 完整请求耗时和降级状态。
+
+失败样本回到 3090 进行复盘、补标和模型迭代，不提交 GitHub。
+
+## 训练计划
+
+3090 单卡按顺序训练，不同时并发占用同一张 RTX 3090：
+
+1. prohibited_items YOLO11m。
+2. 第一项成功完成后自动开始 garbage YOLO11m。
+
+共同计划：
+
+- `model: yolo11m.pt`
+- `epochs: 200`（最多）
+- `patience: 50`
+- 使用 early stopping
+- `batch`、`workers`、`imgsz`、`device` 在训练前按 3090 环境确认
+
+建议输出：
+
+- `runs/detect/wrc_prohibited_yolo11m/`
+- `runs/detect/wrc_garbage_yolo11m/`
+
+建议最终命名：
+
+- `prohibited_items_yolo11m_best.pt`
+- `garbage_yolo11m_best.pt`
+
+Ultralytics 训练的候选最佳权重通常位于各运行目录的 `weights/best.pt`。`yolo11m.pt` 是预训练起点，不是最终自定义权重；`yolo26n.pt` 是旧测试或备用预训练权重，暂不删除。
+
+## Thor 部署与交付
+
+目标流程：
+
+```text
+3090 训练生成各自 best.pt
+  -> 将模型带到 Thor
+  -> 在 Thor 实际 JetPack / TensorRT 环境导出或构建 engine
+  -> Runtime 加载多个 engine
+  -> Thor 实机 benchmark 与 10 秒链路验证
+  -> 机器人接口联调
+  -> 形成可交付部署包
+```
+
+最终交付不能只有普通 `.pt`，至少应包含：
+
+- 模型或 TensorRT engine。
+- class names。
+- model -> `task_group` mapping。
+- Runtime code。
+- configuration。
+- run command。
+- sample request / response。
+- environment notes。
+
+TensorRT engine 应在 Thor 实际环境中构建或验证，避免脱离目标 JetPack / TensorRT 环境假设兼容性。
 
 ## Development Roadmap
 
-### 阶段 0：项目文档 setup
+- 已完成：禁带品和垃圾原始最终数据的人工检查与整理。
+- 已暂停：`unified_detection` 统一 14 类训练路线。
+- 已完成：两个独立 YOLO11m 在外部训练机完成训练，权重尚待交付当前 Mac。
+- 已完成：共享多模型 Runtime v1，包括配置、Ultralytics backend、模块调度、统一 schema、冲突标记、review decision、JSON、Preview、CLI 和 FakeBackend 测试。
+- 下一步：放置两个正式权重，用真实照片完成双模型 smoke test，并检查 JSON / Preview 一致性。
+- 下一步：评估两个模型的误报、漏报、冲突和各类表现。
+- 下一步：在 Thor 构建多个 TensorRT engine，并 benchmark 串行/并行策略。
+- 后续：接入 behavior module、机器人接口和 VLM 复核。
+- 后续：失败样本回流和模型迭代。
 
-repo、`AGENTS.md`、Obsidian/wiki setup 已完成。
+## 架构待确认
 
-### 阶段 1：Mac 本地 YOLO11n 预训练模型单图 prediction
-
-Mac 本地 YOLO11n 预训练模型单图 prediction 已跑通，用于验证基础环境和最小 baseline。
-
-### 阶段 2：同步新版项目 architecture 到 wiki
-
-将项目负责人提供的大小模型协同整体架构同步到 Obsidian/wiki，形成 v0.3 草案。
-
-### 阶段 3：确认类别清单、数据采集规范和标注工具
-
-当前下一步不是马上训练 YOLO，而是先确认数据采集与标注计划。没有数据和标注，无法进行真正的自定义训练。
-
-### 阶段 4：采集第一批禁带品 / 垃圾 / 负样本数据
-
-优先采集禁带品、垃圾和负样本数据，覆盖常见视角、光照、遮挡和容易误报的普通物品。
-
-### 阶段 5：标注数据并导出 YOLO 格式
-
-使用确认后的标注工具完成标注，导出 YOLO 格式，并检查类别命名、bbox 质量和数据划分。
-
-### 阶段 6：在高算力机器上训练 YOLO11m 和 YOLO11s
-
-在高算力机器 / 服务器 / 高性能笔记本上训练 YOLO11m 和 YOLO11s，自定义训练不以 Mac 为主力。
-
-### 阶段 7：评估误报、漏报、速度和各类别表现
-
-比较 YOLO11m / YOLO11s 的精度、速度、误报、漏报、各类别表现和部署压力。
-
-### 阶段 8：设计推理脚本 / 视觉服务
-
-设计推理脚本和视觉服务接口，明确输入、输出、日志、超时、复核和错误处理。
-
-### 阶段 9：导出 ONNX / TensorRT，准备 Thor 部署
-
-在 Thor 环境确认后，导出 ONNX / TensorRT 并准备 NVIDIA / CUDA / TensorRT / ROS2 / Docker 生态下的部署验证。
-
-### 阶段 10：机器人联调、失败样本回流和模型优化
-
-与机器人系统联调，收集失败样本，迭代数据、模型、阈值、规则和 VLM 复核策略。
-
-## 待确认事项
-
-- CV 团队职责边界。
-- 图片输入方式。
-- Thor 具体型号、系统环境和可用 SDK。
-- Orange Pi 是否只保留为测试板或备用设备。
-- 是否允许现场部署高性能 GPU / VLM。
-- VLM 是否允许联网。
-- 每个任务允许的识别时间和动作等待时间。
-- 10 秒超时机制由哪一层实现。
-- 是否需要 segmentation，以及从哪个阶段开始引入。
-- 是否已有训练数据。
-- 道具准备和拍摄计划。
-- 第一阶段是否优先做禁带品和垃圾，把不文明行为放到后续。
+- `unified_detection` 在 3090 上是否已经物理删除。
+- 禁带品 `roller_skates` / `barbecue_grill` 的实际样本数。
+- 两个训练任务的 `batch`、`workers`、`imgsz` 和 `device`。
+- Thor 上多模型串行/并行策略与实际延迟。
+- 当前 `schema_version: 1.0` 与机器人侧最终协议如何封装。
+- 跨模型冲突在真实照片中的频率，以及是否需要置信度校准或业务规则。
+- behavior module 的模型与数据方案。
+- 机器人输入输出协议和 `suggestedAction` 职责边界。
+- VLM 现场设备、模型版本、联网条件和时间预算。

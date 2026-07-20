@@ -1,154 +1,166 @@
 # Decisions
 
-本文件记录已经确认的项目决策和架构选择。未确认内容应写入 `open-questions.md`。
+本文件记录当前有效决策和被替代的历史方案。未确认事项写入 [[open-questions]]。
 
-## 已确认决策
+## 当前有效决策
 
 ### D001：项目默认使用中文文档
 
 - 日期：2026-06-22
-- 决策：项目沟通、项目文档和 Obsidian/wiki 默认使用中文。
-- 说明：文件名、文件夹名、代码变量、配置字段、API 字段、模型名可以使用英文。
+- 决策：沟通、项目文档和 Obsidian/wiki 默认使用中文；技术标识可以使用英文。
 
-### D002：当前 setup pass 只建立规则和文档结构
+### D002：大型数据、模型和实验输出不进入 Git
 
-- 日期：2026-06-22
-- 决策：当前阶段只创建项目记忆、Codex 规则和 wiki 文档结构。
-- 说明：不实现 YOLO、训练、推理、API、Orange Pi、Thor 或硬件部署代码。
+- 日期：2026-06-22，2026-07-17 更新
+- 决策：GitHub 保存代码、配置、wiki、Runtime 和部署脚本；数据集、Roboflow 导出、runs、权重和大型缓存不提交。
 
-### D003：采用 YOLO11n / YOLO11s 作为初步 baseline 方向
+### D003：正式数据以两个原始 datasets_final 为准
 
-- 日期：2026-06-22
-- 决策：视觉实时小模型 baseline 初步考虑 YOLO11n / YOLO11s。
-- 说明：这是早期技术方向。后续已由 D006 更新：YOLO11n 保留为环境验证和最小 baseline，YOLO11m 成为当前主力小模型候选，YOLO11s 作为辅助 / 轻量对比候选。
+- 日期：2026-07-18
+- 决策：正式训练入口为 `datasets_final/prohibited_items/data.yaml` 和 `datasets_final/garbage/data.yaml`。
+- 说明：两个数据集已经过人工检查，当前比 `unified_detection` 合并产物更可信。
 
-### D004：采用“两级视觉识别”作为初步架构方向
+### D004：Unified Detection 暂停并禁止训练
 
-- 日期：2026-06-22
-- 决策：初步架构为小模型实时识别，加大模型 / VLM 对低置信度、遮挡和歧义样本做兜底复核。
-- 说明：该方向已扩展为 D007 的大小模型协同 v0.3 架构草案。
+- 日期：2026-07-18
+- 决策：`unified_detection` 因 train / val / test previews 出现大量 bbox 错误，尤其是 `spray_can`，当前不得用于训练。
+- 说明：不继续投入主要比赛准备时间修复；若目录仍存在，只能标记为 `deprecated` / `investigation`。
 
-### D005：大型数据、模型权重和实验输出不进入 Git
+### D005：分别训练两个 YOLO11m
 
-- 日期：2026-06-22
-- 决策：大型数据集、图片、视频、标注导出包、模型权重和实验输出不提交到 Git。
-- 说明：使用 `.gitignore` 忽略相关目录和文件格式。
+- 日期：2026-07-18
+- 决策：基于 `yolo11m.pt` 分别训练 prohibited_items YOLO11m 和 garbage YOLO11m。
+- 说明：这是比赛约剩 12 天时的数据风险控制选择，正确性和可交付性优先于单模型简洁性。
 
-### D006：小模型候选策略更新
+### D006：3090 单卡顺序训练
 
-- 日期：2026-06-22
-- 决策：YOLO11n 用于 Mac 本地环境验证和最小 baseline；YOLO11m 作为当前主力小模型候选；YOLO11s 作为辅助 / 轻量对比候选。
-- 说明：YOLO11m 不是最终模型，需要通过数据、精度、速度和 Thor 部署性能评估确认。
+- 日期：2026-07-18
+- 决策：同一张 RTX 3090 不并发执行两个训练任务，先 prohibited_items，成功后再 garbage。
+- 当前计划：最多 200 epochs、`patience=50`、early stopping；其余资源参数训练前确认。
 
-### D007：采用大小模型协同 v0.3 架构方向
+### D007：多个独立模型共享一个 Runtime Pipeline
 
-- 日期：2026-06-22
-- 决策：系统方向为边缘小模型快速识别 + 高算力大模型 / VLM 兜底分析。
-- 说明：大模型 / VLM 只处理低置信度、遮挡、类别歧义、复杂行为判断和漏检补充，不处理全部视频帧。
+- 日期：2026-07-18
+- 决策：Runtime 对同一图片运行 prohibited detector、garbage detector，并预留 behavior module，然后规范化、合并和融合结果。
+- 说明：当前不是统一 YOLO 模型。
 
-### D008：大模型复核必须设置 10 秒超时机制
+### D008：机器人仍只发送图片
 
-- 日期：2026-06-22
-- 决策：大模型 / VLM 请求必须有 10 秒内返回或超时中断 / 回退机制。
-- 说明：超时机制用于避免比赛流程被大模型阻塞。
+- 日期：2026-07-17，2026-07-18 重申
+- 决策：机器人不发送 `taskId`、`taskType`、`mode` 或 `category`。
+- 说明：Pipeline 根据模型来源写入 `task_group`。
 
-### D009：Thor 作为机器人本体侧主线边缘计算平台
+### D009：Task Group 由模型来源确定
 
-- 日期：2026-06-22
-- 决策：NVIDIA Thor 作为机器人本体侧主要边缘计算平台，负责现场小模型实时推理和边缘视觉服务。
-- 说明：具体 Thor 型号、系统、CUDA / TensorRT / ROS2 / Docker 环境仍待确认。
+- 日期：2026-07-18
+- 决策：prohibited model -> `prohibited_items`；garbage model -> `garbage`；behavior module -> `uncivilized_behavior`。
+- 说明：不同模型保留各自 class id，不创建统一全局 class id，也不修改最终 labels。
 
-### D010：Orange Pi / RK3588 不作为当前主线最终部署平台
+### D010：高置信直返，VLM 条件式兜底
 
-- 日期：2026-06-22
-- 决策：Orange Pi / RK3588 当前记录为边缘测试板或备用测试设备，不作为主线最终部署平台。
-- 说明：当前不让 RKNN / Orange Pi 路线干扰 Thor 主线。
+- 日期：2026-07-18
+- 决策：高置信模型结果直接返回；低置信、遮挡或歧义结果才请求 Qwen / VLM。
+- 说明：VLM 不处理所有图片或全部帧。
 
-### D011：当前下一步先确认数据采集与标注计划
+### D011：全链路目标为 10 秒，但必须实测
 
-- 日期：2026-06-22
-- 决策：下一步不是马上训练 YOLO，而是先确认数据采集规范、标注工具和第一批数据计划。
-- 说明：没有数据和标注，无法进行真正的自定义训练。
+- 日期：2026-07-18
+- 决策：完整 Pipeline 应在 10 秒内返回或降级。
+- 说明：不声称多模型天然满足 10 秒；必须在 Thor 上 benchmark，最终决定串行/并行、模型尺寸和触发策略。
 
-### D012：第一批训练数据优先覆盖 3 个禁带品 + 3 个垃圾类别
+### D012：不文明行为独立设计
 
-- 日期：2026-06-22
-- 决策：第一批优先类别为 `spray_can`、`portable_gas_stove`、`skateboard`、`plastic_bottle`、`paper_ball`、`food_container`。
-- 说明：这些类别覆盖禁带品检查和垃圾识别两个主要任务，道具相对容易准备，适合快速跑通自定义 YOLO 训练闭环。
+- 日期：2026-06-22，2026-07-18 重申
+- 决策：不文明行为不强行作为普通 detection 类别混入当前两个 YOLO 数据集。
+- 说明：Runtime 预留 behavior module，可采用 detector、segmentation、pose、关系规则、tracking、VLM 或组合方案。
 
-### D013：不文明行为不进入第一批 YOLO object detection 训练重点
+### D013：垃圾 class id 保持最终 Roboflow 顺序
 
-- 日期：2026-06-22
-- 决策：踩踏草坪、吸烟、占用消防通道、站立 / 躺在长椅上暂不作为第一批 YOLO object detection 训练重点。
-- 说明：不文明行为不是简单 object detection，需要结合关系、区域、姿态 / 动作线索、tracking、规则判断或 VLM 复核单独设计。
+- 日期：2026-07-17
+- 决策：垃圾顺序固定为 `crumpled_paper_ball`、`disposable_food_container`、`empty_cigarette_box`、`plastic_drink_bottle`、`plastic_food_wrapper`、`rigid_takeout_bag`，ID 为 0 至 5。
+- 说明：不重新映射最终垃圾 labels。
 
-### D014：Qwen3-VL-32B 可辅助预标注和复核，但人工确认是最终标签来源
+### D014：禁带品 8 类定义保留，样本状态以训练机为准
 
-- 日期：2026-06-22
-- 决策：Qwen3-VL-32B 可用于预标注、类别复核、漏标检查和难例分析，但不能把自动标注直接当作最终训练标签。
-- 说明：训练 YOLO 的 bbox / label 必须经过人工检查和修正，避免错误 VLM 标注增加禁带品误报风险。
+- 日期：2026-07-18
+- 决策：比赛类别定义保持 8 类；`roller_skates` 和 `barbecue_grill` 可能为 0 样本或待补充，训练前必须核对，不虚构已有数据。
 
-### D015：第一阶段先使用 bounding box，不强制 segmentation
+### D015：Thor 最终交付多个实机验证 engine
 
-- 日期：2026-06-22
-- 决策：第一阶段使用 bounding box 标注和 object detection 训练，不强制做 segmentation。
-- 说明：如果后续垃圾抓取需要更精确区域，再考虑 YOLO11-seg 或 FastSAM 的 mask 标注 / 分割流程。
+- 日期：2026-07-18
+- 决策：3090 生成各自 best.pt，在 Thor 实际 JetPack / TensorRT 环境构建或导出 engine，并由 Runtime 加载多个 engine。
+- 交付至少包含模型/engine、class names、task group mapping、Runtime、配置、运行命令、请求响应示例和环境说明。
 
-### D016：Roboflow spray can by Kim 作为 spray_can 第一版基础数据源
+### D016：权重文件暂不清理
 
-- 日期：2026-06-25
-- 决策：使用 Roboflow 下载的 “spray can Computer Vision Dataset by Kim” 作为 `spray_can` 第一版外部基础数据源。
-- 说明：该数据源位于 `datasets_raw/roboflow_spray_can_by_kim/`，原始数据保持只读，不直接修改。
+- 日期：2026-07-18
+- 决策：训练机上的 `yolo11m.pt` 作为训练起点保留；`yolo26n.pt` 作为旧测试/备用权重暂不删除。
+- 说明：确认训练产物和用途后再单独整理；两者都不提交 GitHub。
 
-### D017：多类别 Roboflow 数据集必须先过滤为项目 class 再进入训练集
+### D017：正式 Runtime 使用配置驱动的模块注册
 
-- 日期：2026-06-25
-- 决策：多类别 Roboflow 数据集不能直接进入训练集，必须先过滤和重映射为项目类别。
-- 说明：本次将原始 `spray can` class id `2` 过滤并重映射为项目类别 `spray_can` class id `0`；非目标类别 LED、toilet cleaner 等不进入 clean 数据集。
+- 日期：2026-07-18
+- 决策：主 Pipeline 遍历配置中的 enabled modules，不写死模型数量、业务类别、class names 或模型路径。
+- 说明：当前 `prohibited_items` 和 `garbage` 都通过通用 `DetectionModule` 接入，后续 behavior 通过新增模块接入。
 
-### D018：datasets_clean/spray_can/ 作为 spray_can canonical clean dataset
+### D018：Runtime v1 使用稳定统一 schema
 
-- 日期：2026-06-25
-- 决策：`datasets_clean/spray_can/` 作为 `spray_can` 类别的 canonical clean 数据集目录。
-- 说明：后续 `spray_can` 的公开来源、自采数据和人工修正数据，应优先合并到该目录对应的数据构建流程中。
+- 日期：2026-07-18
+- 决策：输出使用 `schema_version: 1.0`；每条 observation 包含 `task_group`、类别、置信度、来源模型、geometry、review、conflicts 和 metadata。
+- 说明：像素 `bbox_xyxy` 是 canonical 坐标，归一化 xyxy 从同一个 geometry 计算；schema 同时预留 mask、pose、region 和 relation。
 
-### D019：同一物品类别的多个公开来源合并到类别级 clean 目录
+### D019：Runtime v1 顺序执行并隔离模块失败
 
-- 日期：2026-06-25
-- 决策：同一物品类别的多个公开来源不再长期拆成多个 clean 目录，而是合并到该物品自己的 canonical clean 目录。
-- 说明：可以保留 raw 来源和清洗脚本，clean 输出采用简单稳定命名，方便训练配置和 Obsidian 记录。
+- 日期：2026-07-18
+- 决策：当前只支持 sequential；所有模块成功为 `success`，部分成功为 `partial_success`，输入无效或全部模块失败为 `failure`。
+- 说明：单个模块失败不得丢弃其他成功模块的 observation；当前只记录耗时，不实现强制 timeout。
 
-### D020：aerosol / spray / spray can 相关来源类别统一映射为 spray_can
+### D020：跨任务冲突保留双方结果
 
-- 日期：2026-06-25
-- 决策：来源数据中的 `aerosol`、`spray`、`spray can` 以及明确喷雾商品类，进入本项目时统一映射为 `0: spray_can`。
-- 说明：不把明显非喷雾罐类别强行映射为 `spray_can`；对于 polygon / segmentation 来源，需先确认是否转换为 bbox 再进入 object detection 训练集。
+- 日期：2026-07-18
+- 决策：不同 `task_group` 的 bbox 达到 IoU 阈值时，两条 observation 都保留并互相标记 `cross_model_overlap`。
+- 说明：当前不实施业务类别覆盖优先级，也不进行跨模型强制去重；低置信和冲突只触发 review pending。
 
-### D021：segmentation / polygon 数据可转换为 bbox 后作为 detection 数据候选
+### D021：JSON 与 Preview 共享最终 PipelineResponse
 
-- 日期：2026-06-25
-- 决策：明确属于目标类别的 segmentation / polygon 标注，可以通过外接 bbox 转换为 YOLO detection 训练数据候选。
-- 说明：转换数据必须经过 preview 人工检查，确认 bbox 是否过松、类别是否正确、是否适合当前比赛场景后，再决定是否长期保留在训练集。
+- 日期：2026-07-18
+- 决策：Preview 只能读取最终 response 中的 geometry，不重新推理、不读取 labels、不重建 bbox。
+- 说明：JSON 先原子写出；Preview 失败会记录 output error，不丢失已成功的推理结果。
 
-### D022：spray_can 只保留 canonical clean dataset 和当前数据工具
+### D022：推理 backend 与业务模块隔离
 
-- 日期：2026-06-25
-- 决策：`spray_can` 当前只保留 `datasets_clean/spray_can/` 作为 canonical clean dataset，删除早期 `datasets_clean/spray_can_yolo11_single_class/` 中间目录。
-- 说明：早期单源过滤、旧 train / val 划分脚本和 `merge_spray_can_sources.py` 已由模块化通用 YOLO dataset tools 替代。
+- 日期：2026-07-18
+- 决策：Ultralytics 与未来 TensorRT 通过 `InferenceBackend` 隔离，backend-specific result 不得泄露到 Pipeline。
+- 说明：TensorRT、behavior 和 VLM 当前只保留明确扩展接口或 schema，不伪造已实现能力。
 
-### D023：dataset_tools 采用通用模块化工具链
+### D023：权重类别映射必须在启动时严格校验
 
-- 日期：2026-06-25
-- 决策：`scripts/dataset_tools/` 不再为每个类别长期维护专用合并脚本，改为保留通用工具：`yolo_common.py`、`extract_class_dataset.py`、`merge_class_datasets.py`、`split_train_val.py` 和 `preview_yolo_boxes.py`。
-- 说明：后续 `skateboard`、`portable_gas_stove`、`plastic_bottle` 等类别应复用同一套 extract / merge / split / preview 流程，避免把单个类别的临时逻辑固化为长期入口。
-- 约束：这些工具只负责数据清洗、格式转换、合并、划分、校验和 preview，不负责 YOLO 训练、推理、依赖安装或硬件部署。
+- 日期：2026-07-19
+- 决策：每个 enabled detection module 必须提供有序 `expected_class_names`；Ultralytics 权重加载后校验 class ID 从 0 连续、数量一致、名称和顺序完全一致。
+- 说明：类别顺序决定 class ID，不允许只比较集合；校验失败时在处理图片前终止启动。
 
-### D024：多类别 YOLO 训练集必须显式统一 class id 映射
+### D024：后处理失败不得删除成功推理结果
 
-- 日期：2026-06-25
-- 决策：多类别 YOLO 训练集不能直接拼接多个单类 dataset 的 label，必须显式重映射 class id 并生成新的 `data.yaml`。
-- 当前 3 类禁带品 baseline class 顺序：
-  - `0: spray_can`
-  - `1: skateboard`
-  - `2: portable_gas_stove`
-- 说明：三个单类 clean dataset 内部 class id 都是 `0`，直接拼接会导致所有类别被误认为同一类；因此使用 `merge_multiclass_dataset.py` 生成 `datasets_clean/prohibited_items_3cls/`。
+- 日期：2026-07-19
+- 决策：Fusion 与 Review 分阶段隔离。任一阶段失败时保留已有 observations 并记录对应阶段错误；只要至少一个模块成功，顶层状态为 `partial_success`。
+- 说明：Fusion fallback 继续使用统一稳定排序和 observation ID 分配逻辑，不复制另一套规则。
+
+### D025：Schema 预留 track_id，但不代表 Tracking 已实现
+
+- 日期：2026-07-19
+- 决策：`Observation.track_id` 为可空字段；`RequestContext.timestamp` 使用 datetime，`frame_index` 必须非负；`schema_version` 仍为 `1.0`。
+- 说明：当前单图流程不生成 track ID，也没有 Tracking、视频或多帧融合。
+
+### D026：Runtime 要求 Python 3.10 或更高
+
+- 日期：2026-07-19
+- 决策：`pyproject.toml` 的 `requires-python` 为 `>=3.10`，与当前类型注解语法保持一致。
+
+## 被替代的历史方案
+
+- 早期 YOLO11n 环境验证：已完成，仅保留历史意义。
+- 3 类 Mac `prohibited_items_3cls`：流程验证历史，已从 Mac 清理。
+- 统一 YOLO11m + `unified_detection`：已被两个独立 YOLO11m + 共享 Runtime 方案替代。
+- 统一全局 class id：当前不再需要；两个 detector 保持各自类别空间，以 `task_group` 区分。
+- 基于机器人 `taskType` 切换模型：未采用；机器人仍只发送图片。
+- Orange Pi / RK3588 主线部署：未采用；当前主线为 Thor。

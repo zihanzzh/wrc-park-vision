@@ -1,0 +1,10 @@
+numpy>=1.24
+Pillow>=10
+PyYAML>=6
+pydantic>=2
+
+[dev]
+pytest>=8
+
+[ultralytics]
+ultralytics<9,>=8.3

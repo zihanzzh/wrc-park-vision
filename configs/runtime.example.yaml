@@ -1,0 +1,58 @@
+runtime:
+  execution: sequential
+  output_dir: runtime_outputs
+
+modules:
+  - id: prohibited_items
+    enabled: true
+    type: detection
+    task_group: prohibited_items
+    backend: ultralytics
+    model_path: ${WRC_PROHIBITED_MODEL_PATH}
+    model_id: prohibited_items_yolo11m
+    expected_class_names:
+      - spray_can
+      - portable_gas_stove
+      - megaphone
+      - skateboard
+      - kick_scooter
+      - speaker
+      - roller_skates
+      - barbecue_grill
+    device: auto
+    confidence: 0.25
+    iou: 0.7
+    imgsz: 640
+
+  - id: garbage
+    enabled: true
+    type: detection
+    task_group: garbage
+    backend: ultralytics
+    model_path: ${WRC_GARBAGE_MODEL_PATH}
+    model_id: garbage_yolo11m
+    expected_class_names:
+      - crumpled_paper_ball
+      - disposable_food_container
+      - empty_cigarette_box
+      - plastic_drink_bottle
+      - plastic_food_wrapper
+      - rigid_takeout_bag
+    device: auto
+    confidence: 0.25
+    iou: 0.7
+    imgsz: 640
+
+review:
+  low_confidence_threshold: 0.45
+  cross_model_iou_threshold: 0.75
+  review_cross_task_overlap: true
+  review_module_failure: true
+
+preview:
+  enabled: true
+  task_group_colors:
+    prohibited_items: "#dc2626"
+    garbage: "#16a34a"
+    uncivilized_behavior: "#2563eb"
+    unknown: "#d97706"

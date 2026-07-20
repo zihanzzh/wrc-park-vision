@@ -1,101 +1,94 @@
 # Hardware Notes
 
-本文件记录项目相关硬件角色区别。当前根据项目负责人提供的新版整体架构图更新硬件分工理解。
+本文件记录当前设备分工和多模型部署方向。
 
-## 已确认硬件分工
+## Mac
 
-### Mac
+角色：
 
-已确认角色：
+- 项目主开发机。
+- 使用 Codex 编写共享 Runtime Pipeline、部署代码和配置。
+- 管理 GitHub、Obsidian/wiki 和项目文档。
+- 进行轻量调试和接口设计。
 
-- 开发机。
-- 用于写代码、跑基础脚本、管理 GitHub repo。
-- 用于管理 Obsidian/wiki。
-- 用于 YOLO baseline 环境验证。
-
-明确不是：
+边界：
 
 - 不作为正式训练主力。
+- 不保存 3090 的 `datasets_final/` 副本。
 - 不作为最终机器人部署平台。
+- 已清理早期数据目录、测试 runs 和 `yolo11n.pt`。
 
-### 高算力机器 / 服务器 / 高性能笔记本
+## 3090 Linux 工作站
 
-已确认角色：
+角色：
 
-- 用于训练 YOLO。
-- 用于大模型 / VLM 推理。
-- 用于数据预标注。
-- 用于难例分析。
-- 用于模型评估。
-- 可能作为现场大模型兜底设备。
+- 保存 `datasets_final/prohibited_items/` 和 `datasets_final/garbage/`。
+- 基于 `yolo11m.pt` 分别训练 prohibited_items 和 garbage 两个 YOLO11m。
+- 单卡顺序训练：先 prohibited_items，成功后再 garbage，不并发占用同一 RTX 3090。
+- 保存各自 runs、训练指标和 `weights/best.pt`。
+- 进行模型评估、难例分析和数据回流。
+- 必要时运行 Qwen / VLM。
 
-待确认：
+权重说明：
 
-- 具体设备来源。
-- GPU 型号和显存。
-- 操作系统和驱动环境。
-- 是否允许比赛现场使用。
-- 是否允许联网运行 VLM。
+- `yolo11m.pt` 是当前训练起点，不是最终自定义权重。
+- `yolo26n.pt` 是旧测试或备用预训练权重，当前不属于主线但暂不删除。
+- 计划输出 `prohibited_items_yolo11m_best.pt` 和 `garbage_yolo11m_best.pt`。
+- 权重和 runs 不提交 GitHub。
 
-### NVIDIA Thor
+`unified_detection` 不得训练；其物理目录是否已删除尚待在 3090 确认。
 
-已确认角色：
+## NVIDIA Jetson AGX Thor Developer Kit
 
-- 机器人本体侧主计算平台。
-- 负责比赛现场的小模型实时推理。
-- 负责运行边缘视觉服务。
-- 接收机器人相机图片。
-- 输出类别、bbox、mask、confidence、trackId、建议动作等结构化结果。
+角色：
 
-后续部署方向：
+- 最终边缘部署目标。
+- 部署共享 Runtime Pipeline。
+- 加载 prohibited_items、garbage 和后续 behavior module 的多个 TensorRT engine。
+- 进行串行/并行策略、显存、功耗和延迟 benchmark。
+- 验证完整链路能否在 10 秒内返回或降级。
+- 最终连接机器人图片输入与结果输出接口。
 
-- 优先考虑 NVIDIA / CUDA / TensorRT / ROS2 / Docker 生态。
+当前状态：
 
-待确认：
+- Thor 是独立 Developer Kit。
+- 尚未完成首次初始化和机器人接入。
+- 实际 JetPack、CUDA、TensorRT、ROS2 和 Docker 环境待确认。
 
-- Thor 具体型号。
-- 操作系统。
-- CUDA 版本。
-- TensorRT 版本。
-- ROS2 版本。
-- Docker 使用方式。
-- 与机器人主控的通信方式。
+部署原则：
 
-注意：
+- 3090 负责训练产生 PyTorch best.pt。
+- TensorRT engine 应在 Thor 实际环境中导出、构建或至少实机验证。
+- 不声称多个模型一定满足 10 秒，必须 benchmark。
+- YOLO 预计不是主要延迟瓶颈，VLM 更可能影响总时延，但最终以 profiling 为准。
+- benchmark 后再决定模型串行/并行、模型尺寸、精度模式和 VLM 触发策略。
 
-- 当前不要写不确定的 Thor 硬件细节。
-- 当前不要假设 Thor 环境已经可用。
+## 最终交付包
 
-### Orange Pi 5 Max / RK3588
+国内最终收到的应是经过 Thor 实机验证的部署包，而不只是普通 `.pt`。至少包含：
 
-已确认角色：
+- 模型或 TensorRT engine。
+- 各模型 class names。
+- model -> `task_group` mapping。
+- Runtime code。
+- configuration。
+- run command。
+- sample request / response。
+- environment notes。
+- 已验证的 Thor 环境和 benchmark 说明。
 
-- 当前不作为主线最终部署平台。
-- 可作为边缘测试板或备用测试设备记录。
+## Orange Pi / RK3588
 
-当前原则：
+- 不是当前主线最终部署目标。
+- 仅作为历史备选或测试路线。
+- 当前不围绕 RKNN / Orange Pi 设计主线多模型 Runtime。
 
-- 不应让 RKNN / Orange Pi 路线干扰当前 Thor 主线。
-- 不在当前阶段围绕 RKNN 固定模型导出或部署路线。
+## 当前硬件路线
 
-待确认：
-
-- 是否后续仍需要 Orange Pi 做对比测试。
-- 是否需要保留 RKNN 实验计划。
-
-## 当前硬件主线
-
-当前主线理解为：
-
-1. Mac 负责开发、repo / wiki 管理和基础环境验证。
-2. 高算力机器负责训练、大模型 / VLM、评估和难例分析。
-3. Thor 负责机器人本体侧实时小模型推理和边缘视觉服务。
-4. Orange Pi / RK3588 仅作为测试或备用路线，不作为当前主线部署平台。
-
-## 当前原则
-
-- 不假设任何未确认硬件环境已经可用。
-- 不在未确认 Thor 环境前编写部署代码。
-- 不在未确认工具链前固定 CUDA、TensorRT、ROS2、Docker 或 RKNN 版本。
-- 不把 Mac 当作正式训练或最终部署平台。
-- 不把 Orange Pi / RK3588 当作主线最终部署平台。
+```text
+Mac 开发共享 Runtime 与文档
+  -> 3090 顺序训练两个 YOLO11m
+  -> Thor 构建/验证多个 TensorRT engine
+  -> Thor benchmark 与 10 秒预算验证
+  -> 机器人联调和部署包交付
+```

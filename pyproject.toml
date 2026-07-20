@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wrc-park-vision"
+version = "0.1.0"
+description = "Runtime pipeline for WRC park-management vision tasks"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "Pillow>=10",
+  "PyYAML>=6",
+  "pydantic>=2",
+]
+
+[project.optional-dependencies]
+ultralytics = ["ultralytics>=8.3,<9"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+wrc-park-vision-runtime = "wrc_park_vision.runtime.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

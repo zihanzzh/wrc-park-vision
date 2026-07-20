@@ -21,6 +21,7 @@ ENV/
 # Local environment files
 .env
 .env.*
+configs/runtime.local.yaml
 
 # Large data directory contents
 datasets_raw/
@@ -46,6 +47,7 @@ data/exports/*
 !data/exports/README.md
 
 # Model weights and exported model files
+weights/
 *.pt
 *.pth
 *.onnx
@@ -58,9 +60,13 @@ data/exports/*
 runs/
 outputs/
 experiments/
+runtime_outputs/
 
 # Logs
 *.log
 
 # Zip Files
 *.zip
+
+test_images/
+runtime_outputs/

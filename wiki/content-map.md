@@ -1,21 +1,21 @@
 # Wiki Content Map
 
-本文件是 Obsidian/wiki 导航入口，用于说明每个文档的用途。
+本文件是 Obsidian/wiki 导航入口。各文档保持单一职责，避免重复维护同一状态。
 
 ## 核心文档
 
-- `../PROJECT_CONTEXT.md`：项目背景、目标、当前阶段、技术方向、硬件角色和团队职责边界。
-- `../AGENTS.md`：Codex / agent 工作规则。
-- `../README.md`：面向仓库读者的项目入口说明。
+- [[../PROJECT_CONTEXT|PROJECT_CONTEXT]]：项目背景、当前阶段、技术主线、数据边界和设备分工。
+- [[../AGENTS|AGENTS]]：Codex / agent 长期工作规则。
+- [[../README|README]]：面向仓库读者的项目入口。
 
-## wiki 文档
+## Wiki 文档
 
-- `current-status.md`：记录项目当前状态、已完成事项、尚未完成事项和下一步。
-- `competition-rules.md`：记录“园区管理岗”比赛规则、任务背景、计分风险和对视觉系统的影响。
-- `architecture.md`：记录视觉系统 v0.3 大小模型协同架构草案、运行时流程、模型路线和开发路线。
-- `decisions.md`：记录已经确认的项目决策和架构选择。
-- `open-questions.md`：记录待确认问题，避免把未知信息写成事实。
-- `class-list.md`：记录全量比赛类别、第一批优先训练类别、暂缓类别、辅助类别和负样本示例。
-- `data-plan.md`：记录第一版数据采集与标注计划，包括拍摄规范、负样本、标注规则、工具选择、Qwen3-VL-32B 辅助流程和训练前验收标准。
-- `hardware-notes.md`：记录 Mac、高算力机器 / 服务器 / 高性能笔记本、NVIDIA Thor、Orange Pi / RK3588 的角色区别。
-- `codex-log.md`：记录 Codex 每次 meaningful change 做了什么。
+- [[current-status]]：项目现在处于什么阶段、已完成什么、下一步是什么。
+- [[competition-rules]]：比赛任务、计分风险和视觉系统约束。
+- [[architecture]]：共享多模型 Runtime、条件式 VLM、10 秒预算和 Thor 交付架构。
+- [[decisions]]：当前有效决策，以及被新方案替代的历史决策。
+- [[open-questions]]：真正尚未确认、不能自行假设的问题。
+- [[class-list]]：独立禁带品/垃圾 detector 的 class id、task group 和不文明行为定义。
+- [[data-plan]]：3090 最终数据集、数据治理规则和历史数据迭代。
+- [[hardware-notes]]：Mac、3090、Thor 和 Orange Pi / RK3588 的职责分工。
+- [[codex-log]]：Codex 每次 meaningful change 的时间线记录。

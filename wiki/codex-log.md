@@ -2,6 +2,123 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-07-19 Runtime Pipeline v1 安全性修复
+
+本次严格限定在真实权重 smoke test 前的运行安全性修复，没有扩展新的业务能力。
+
+修复内容：
+
+- detection module 新增有序 `expected_class_names`，拒绝缺失、空白或重复类别名。
+- Ultralytics backend 在模型加载后、图片处理前严格校验权重 class ID 连续性、类别数量、名称和顺序；比较逻辑提取为不依赖真实权重的纯函数。
+- 示例配置的 prohibited_items 8 类和 garbage 6 类顺序来自 [[class-list]]。
+- Fusion 与 Review 拆成独立容错阶段；失败时保留成功 observations、稳定 ID 和确定性顺序，并返回 `partial_success` 及正确的阶段错误。
+- Pipeline 初始化失败时清理此前已加载模块；`close()` 会尝试关闭所有模块，不让单个 close 异常阻断后续清理。
+- `Observation` 新增可空 `track_id`；timestamp 改为 datetime，frame index 必须非负；没有实现 Tracking 或多帧融合。
+- Python 版本声明改为 `>=3.10`。
+
+验证结果：
+
+- 35 项 unittest 全部通过，测试不依赖真实 YOLO 权重。
+- 类别映射测试覆盖 dict / list / tuple、数量、名称、顺序、非连续 ID 和错误信息。
+- 新增 Fusion / Review 失败结果保全、初始化清理、best-effort close、track_id、datetime 和 frame index 测试。
+- 真实双模型 smoke test 尚未执行。
+
+本次没有安装依赖、运行真实 YOLO、下载模型、修改数据集或权重、实现 TensorRT / behavior / VLM / Tracking / API / ROS2，也没有 commit 或 push。
+
+## 2026-07-18 正式 Runtime Pipeline v1 实现
+
+本次按已确认架构实现长期使用的多模型 Runtime，不是临时 demo。
+
+新增实现：
+
+- 创建 `pyproject.toml` 和 `src/wrc_park_vision/runtime/` Python package。
+- 创建 `configs/runtime.example.yaml`，支持环境变量、enabled/disabled 模块、模型路径、设备、阈值和 Preview 颜色配置。
+- 实现配置校验、统一 schema、Ultralytics backend、通用 task module、sequential Pipeline、模块故障隔离、稳定排序、跨任务冲突标记和 ReviewPolicy。
+- 实现 JSON 输出、直接复用最终 `PipelineResponse` geometry 的 Preview，以及单图 CLI。
+- 保留 TensorRT backend 与 behavior module 的明确未实现接口；没有伪造 behavior、VLM 或 TensorRT 能力。
+- 创建 `tests/runtime/`，使用 FakeBackend 验证核心逻辑，不依赖真实权重。
+- 更新 `.gitignore`，忽略 `configs/runtime.local.yaml` 和 `runtime_outputs/`。
+
+验证结果：
+
+- 19 项自动测试全部通过。
+- `compileall` 语法编译检查通过；首次系统 Python 缓存路径受沙箱限制，改为将 pycache 写入 `/tmp` 后通过。
+- 测试覆盖配置展开、disabled module、bbox 裁剪与归一化、无效 bbox、模型只加载一次、双模块运行、部分/全部失败、冲突标记、review decision、可注入 ReviewProvider、稳定排序、JSON 序列化、Preview 坐标复用和 Preview 失败保留 JSON。
+
+当前边界：
+
+- 本轮没有安装依赖、训练模型、运行真实 YOLO、修改数据集或权重、接入硬件、commit 或 push。
+- 两个已训练权重尚未放到当前 Mac，真实双模型 smoke test 尚未执行。
+- behavior 推理、VLM 推理、TensorRT、Thor、API、ROS2、tracking、并行执行和强制 timeout 尚未实现。
+
+## 2026-07-18 多模型部署决策同步
+
+本次只同步 Markdown 项目记忆，没有修改脚本、数据集、权重或 `.gitignore`，没有训练、推理、安装依赖、commit 或 push。
+
+最新决策：
+
+- 暂停并废弃 `unified_detection` 统一 14 类训练路线。其 train / val / test previews 存在大量 bbox 显示错误，尤其是 `spray_can`，当前不得训练。
+- 正式数据入口恢复为 `datasets_final/prohibited_items/data.yaml` 和 `datasets_final/garbage/data.yaml`。
+- 基于 `yolo11m.pt` 分别训练 prohibited_items YOLO11m 和 garbage YOLO11m。
+- 3090 单卡顺序训练：先 prohibited_items，成功后再 garbage，不同时并发占用同一 RTX 3090。
+- 当前计划为最多 200 epochs、`patience=50`、early stopping；`batch`、`workers`、`imgsz` 和 `device` 训练前确认。
+- 多个独立模型共享一个 Runtime Pipeline；机器人仍只发送图片，不提供 task type。
+- Pipeline 根据模型来源补充 `task_group`，再规范化、合并并按需解决重复或冲突结果。
+- 高置信结果直接返回；低置信、遮挡或歧义结果才触发 Qwen / VLM。
+- 不文明行为保留独立 behavior module，当前尚未完成最终数据集和模型。
+- Thor 最终需要加载多个 TensorRT engine，并通过实机 benchmark 验证 10 秒完整链路；不预先承诺性能。
+
+训练和权重记录：
+
+- 建议 runs：`runs/detect/wrc_prohibited_yolo11m/`、`runs/detect/wrc_garbage_yolo11m/`。
+- 建议最终权重：`prohibited_items_yolo11m_best.pt`、`garbage_yolo11m_best.pt`。
+- `yolo11m.pt` 是训练起点，不是最终权重。
+- `yolo26n.pt` 是旧测试或备用权重，当前不属于主线但暂不删除。
+
+更新文档：
+
+- `PROJECT_CONTEXT.md`
+- `README.md`
+- `wiki/architecture.md`
+- `wiki/class-list.md`
+- `wiki/current-status.md`
+- `wiki/data-plan.md`
+- `wiki/decisions.md`
+- `wiki/hardware-notes.md`
+- `wiki/open-questions.md`
+- `wiki/content-map.md`
+- `wiki/codex-log.md`
+
+事实边界：
+
+- `roller_skates` 和 `barbecue_grill` 可能仍为 0 样本或待补充，文档未虚构样本数。
+- `unified_detection` 在 3090 上是否已经物理删除尚未由 Mac 验证；即使存在也只能视为 `deprecated` / `investigation`。
+- 本次没有删除 `unified_detection`、`yolo11m.pt` 或 `yolo26n.pt`。
+
+## 2026-07-17 Mac Repo Cleanup
+
+本次按用户明确授权清理 Mac 仓库中的早期测试数据、旧数据处理目录、旧推理输出和测试权重。
+
+删除内容：
+
+- `data/`：早期单图 baseline 测试数据，删除前约 2.1 MB。
+- `datasets_clean/`：Mac 早期 clean dataset，删除前约 3.5 GB。
+- `datasets_raw/`：Mac 早期原始数据，删除前约 7.9 GB。
+- `datasets_stage/`：早期转换和 staging 中间数据，删除前约 1.7 GB。
+- `runs/`：早期 YOLO 单图 prediction / 测试输出，删除前约 2.7 MB。
+- `yolo11n.pt`：早期 Mac 环境验证预训练权重，删除前约 5.4 MB。
+- 仓库内检测到的 5 个 `.DS_Store` macOS 元数据文件；未检测到 `._*` 或 `__MACOSX`。
+
+删除前 `git ls-files` 对上述六个目标无匹配，因此没有删除 Git 跟踪文件。删除后已确认六个目标均不存在，仓库内受检查范围不再存在 `.DS_Store`、`._*` 或 `__MACOSX`。
+
+保留内容：
+
+- `scripts/`、`wiki/`、`.obsidian/`、`.venv/` 和 `.git/`。
+- `AGENTS.md`、`PROJECT_CONTEXT.md`、`README.md` 和 `.gitignore`。
+- 正式训练数据继续只保存在 3090 Linux 工作站的 `datasets_final/`，没有复制或创建到 Mac。
+
+本次没有训练或运行 YOLO，没有安装依赖，没有修改 Python 脚本或 `.gitignore`，没有 commit 或 push。
+
 ## 2026-06-22 Setup Pass
 
 本次 setup pass 完成：
@@ -936,3 +1053,38 @@ preview 结果：
 - 接入 Orange Pi / RK3588。
 - 接入 NVIDIA Thor。
 - git commit。
+
+## 2026-07-17 项目记忆同步
+
+本次根据 3090 训练机最新项目状态和项目负责人结论，同步 Mac 仓库中的 Wiki / Obsidian。此次只修改文档，没有复制或修改数据集，没有修改脚本，也没有训练、推理、部署、commit 或 push。
+
+同步内容：
+
+- 更新 `PROJECT_CONTEXT.md` 和 `README.md`，将项目阶段从初始化 / 数据采集计划更新为统一 YOLO11m 训练、runtime pipeline 开发、Thor 部署准备和 10 秒链路优化。
+- 更新 `wiki/current-status.md`，记录禁带品与垃圾数据准备已基本完成，正式训练入口位于 3090 的 `datasets_final/prohibited_items/` 和 `datasets_final/garbage/`。
+- 更新 `wiki/architecture.md`，移除依赖外部 `taskType` 切换模型的旧设计，改为机器人只发送图片、统一 YOLO11m 检测禁带品与垃圾、高置信直返、低置信条件式 Qwen / VLM 复核、全链路 10 秒超时降级。
+- 更新 `wiki/class-list.md`，写入禁带品完整 8 类映射和垃圾最终 6 类映射；保留禁带品历史 6 类版本，但明确其不是最终永久定义。
+- 更新 `wiki/data-plan.md`，记录 3090 `datasets_final/` 的统一目录结构、垃圾 499 张最终数据、训练前验收和 Mac / Git 数据边界；早期 3 类及 raw/stage/clean 流程降级为历史记录。
+- 更新 `wiki/decisions.md`，记录统一 YOLO11m、无 `taskType` runtime、条件式 VLM、10 秒全链路、三台设备分工和最终数据入口等当前决策，并标注被替代的历史方案。
+- 更新 `wiki/hardware-notes.md`，明确 Mac、3090 Linux 工作站和 NVIDIA Jetson AGX Thor Developer Kit 的分工；Orange Pi / RK3588 仅保留为历史备选 / 测试路线。
+- 更新 `wiki/open-questions.md`，删除已解决的早期采集与标注问题，保留统一全局 class id、训练评估、机器人协议、Thor 软件栈、VLM 现场条件和不文明行为方案等真实待确认项。
+- 更新 `wiki/content-map.md`，使导航描述与各文档当前职责一致。
+
+本次写入的最终类别顺序：
+
+- 垃圾：`0 crumpled_paper_ball`、`1 disposable_food_container`、`2 empty_cigarette_box`、`3 plastic_drink_bottle`、`4 plastic_food_wrapper`、`5 rigid_takeout_bag`。
+- 禁带品：`0 spray_can`、`1 portable_gas_stove`、`2 megaphone`、`3 skateboard`、`4 kick_scooter`、`5 speaker`、`6 roller_skates`、`7 barbecue_grill`。
+
+数据事实边界：
+
+- 垃圾最终数据共 499 张图片，已在 Roboflow 完成人工检查和修正。
+- 禁带品精确最终图片数量和各类统计未在 Mac 侧编造，需以 3090 上 `datasets_final/prohibited_items/data.yaml`、`manifest.csv` 和 README 为准。
+- `garbage/previews/` 为空属于有意保留目录结构，不影响 YOLO 使用 `images`、`labels` 和 `data.yaml` 训练。
+- Mac 早期 `data/`、`datasets_raw/`、`datasets_stage/`、`datasets_clean/` 和测试 runs 留待后续单独 cleanup，本次未删除或移动。
+
+当前仍未完成：
+
+- 正式统一 YOLO11m 自定义模型训练。
+- 统一禁带品 + 垃圾的全局 class id 冻结。
+- runtime pipeline、Thor 初始化和机器人接口接入。
+- 不文明行为独立方案设计。

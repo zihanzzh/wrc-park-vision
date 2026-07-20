@@ -1,0 +1,2 @@
+[console_scripts]
+wrc-park-vision-runtime = wrc_park_vision.runtime.cli:main

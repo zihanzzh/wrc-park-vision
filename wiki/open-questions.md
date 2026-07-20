@@ -1,90 +1,70 @@
 # Open Questions
 
-本文件记录待确认问题。不要在未确认前把这些问题写成工程事实。
+本文件只记录当前仍未确认、不能自行假设的问题。已确认事项见 [[decisions]]。
 
-## 已确认方向
+## 数据状态
 
-- NVIDIA Thor 是机器人本体侧主线边缘计算平台。
-- Mac 是开发机，用于 repo / Obsidian 管理、基础脚本和 YOLO11n 预训练模型单图 prediction 环境验证。
-- 高算力机器 / 服务器 / 高性能笔记本用于训练、大模型 / VLM、难例分析和模型评估。
-- Orange Pi / RK3588 当前不作为主线最终部署平台，可作为测试板或备用测试设备。
-- YOLO11m 是当前主力小模型候选，YOLO11s 是辅助 / 轻量对比候选，YOLO11n 是已跑通的环境验证 baseline。
-- 大模型 / VLM 兜底必须有 10 秒超时中断或回退机制。
+- `unified_detection` 在 3090 上是否已经物理删除？若仍存在，是否需要在赛后保留用于调查？
+- `datasets_final/prohibited_items/` 中 `roller_skates` 和 `barbecue_grill` 的实际图片数与 bbox 数是否为 0？
+- prohibited_items 各类别的最终 train / val / test 分布是什么？
+- 两个正式数据集是否需要在训练前再做一次 manifest / image-label / preview 快速验收？
+- `garbage/previews/` 是否需要补生成，还是当前人工检查记录已足够？
 
-## 团队与职责
+## 训练与评估
 
-- CV 团队负责范围是什么？
-- 机器人主控、策略、硬件部署、视觉识别之间的接口由谁定义？
-- 视觉系统是否只提供识别结果，还是需要参与规则判断和告警决策？
-- 10 秒超时由视觉服务、大模型调用层，还是机器人任务调度层负责？
-- 大模型超时后，机器人执行保守提示、继续观察，还是跳过该疑似结果？
+- 3090 上两个任务各自使用的 `batch`、`workers`、`imgsz` 和 `device` 参数是什么？
+- 两个训练任务如何自动串联，并在第一项失败时安全停止第二项？
+- 最多 200 epochs、`patience=50` 是否适合两个数据集，是否需要分别调整？
+- 正式验收指标是什么：mAP、per-class recall、误报率和漏报率各自要求多少？
+- `roller_skates` / `barbecue_grill` 若为 0 样本，训练配置是保留空类、临时移除还是先补数据？
+- `yolo26n.pt` 后续保留、归档还是删除？
 
-## 输入与接口
+## 多模型 Runtime
 
-- 图片或视频输入来自哪里？
-- 输入是单张图片、视频流、相机实时流，还是机器人系统推送的帧？
-- 是否需要提供 API 服务？
-- 如果需要接口，协议是 ROS2 Topic / Service、HTTP / REST API、WebSocket、gRPC、消息队列，还是比赛框架指定接口？
-- 检测结果需要输出哪些字段？
-- `suggestedAction` 是否由 CV 输出，还是由机器人策略层生成？
-- `trackId` 由视觉模块生成，还是由机器人系统统一维护？
+- 两个已训练权重的最终文件名、训练 run、class names、版本和 SHA256 是什么？
+- prohibited_items 实际权重是完整 8 类版本，还是文档记录的历史 6 类版本？真实权重必须通过 `expected_class_names` 启动校验后才能进入 smoke test。
+- 真实权重在 Mac `models/` 中由谁交付和更新？
+- prohibited_items 和 garbage detector 在 Thor 上继续 sequential 还是改为并行？
+- 多模型是否需要预热并常驻显存？
+- behavior module 是否每张图片都运行，还是由 Pipeline 内部条件触发？
+- 不同模型在真实照片中产生 `cross_model_overlap` 的频率是多少？是否需要增加业务规则？
+- 不同模型 confidence 是否需要校准后再比较？
+- 当前 `schema_version: 1.0` 如何封装到最终 ROS2 / HTTP / gRPC 协议，是否需要兼容字段？
+- Tracking 何时实现，以及正式 `track_id` 由视觉 Runtime 还是机器人系统负责？当前字段只预留，值为 `null`。
+- `suggestedAction` / 语音文案由视觉还是机器人策略层生成？
+- 真实 smoke test 使用哪些固定验收图片和期望结果？
+- Preview 失败但推理成功时，机器人侧是否仍按推理成功处理？
 
-## 硬件与部署
+## 10 秒预算与 VLM
 
-- NVIDIA Thor 的具体型号、系统版本和可用 SDK 是什么？
-- Thor 上的 CUDA / TensorRT / ROS2 / Docker 环境是什么？
-- Orange Pi 5 Max / RK3588 是否后续仍需要做对比测试或备用验证？
-- 是否存在大板子 / 工控主板？它与视觉模块之间如何通信？
-- 高算力机器 / 服务器 / 高性能笔记本的 GPU 型号、显存和系统环境是什么？
-- 是否允许现场部署高性能 GPU / VLM？
-- 是否允许联网调用或运行 VLM？
-- Thor 部署是否优先 ONNX / TensorRT？
+- 10 秒从图片发送、Thor 接收还是 Runtime 开始处理时计时？
+- 多个 YOLO engine、结果融合和 VLM 各分配多少预算？
+- Qwen / VLM 具体运行在 3090、其他高算力设备还是 Thor？
+- 比赛现场是否允许额外设备和联网？
+- VLM 使用目标裁剪图、完整帧还是多帧序列？
+- VLM 超时后返回哪些已确认结果，机器人采取什么动作？
+- 最终是否需要通过模型尺寸或触发策略降低链路时间？
 
-## 数据与类别
+## Thor 部署
 
-- 数据来源是什么？
-- 是否已有比赛现场、模拟场景或网络收集图片？
-- 标注工具和标注格式是否确定？
-- 类别清单是否冻结？
-- 是否需要区分相似类别，例如滑板和儿童滑板车？
-- 是否需要检测“人携带某物”的关系，而不是只检测物体？
-- 第一批数据是否优先采集禁带品和垃圾，把不文明行为放到后续？
-- 道具准备和拍摄计划由谁负责？
-- 负样本需要覆盖哪些普通物品和正常行为？
-- 第一批 6 类道具是否都能准备：`spray_can`、`portable_gas_stove`、`skateboard`、`plastic_bottle`、`paper_ball`、`food_container`？
-- 是否允许使用 Roboflow 云平台上传和标注比赛图片 / 现场图片？
-- 是否已有机器人视角相机或接近机器人高度的拍摄设备？
-- 是否已有露营车 / 模拟安检区 / 模拟园区场地？
-- 负样本由谁拍摄？
-- 标注由谁负责？
-- 是否需要多人交叉检查标注质量？
-- 第一批数据完成的截止时间是什么？
-- 数据集 train / val / test 划分比例是否由 CV 团队决定？
-- `data.yaml` 的类别顺序是否采用 [[class-list]] 中第一批优先类别顺序？
+- Thor Developer Kit 的实际 JetPack / SDK、CUDA、TensorRT、ROS2 和 Docker 版本是什么？
+- Thor 首次初始化由谁负责，完成时间是什么？
+- 两个 YOLO11m 使用 FP16、INT8 还是其他 TensorRT 精度？
+- INT8 如需校准集，使用哪些数据且如何保留版本？
+- 多 engine 的显存、功耗、加载时间和单图延迟是多少？
+- 部署包的目录规范、启动方式和版本策略是什么？
+- 国内机器人侧最终采用 ROS2、HTTP、gRPC 还是其他接口？
 
-## 模型与任务形式
+## 不文明行为
 
-- 第一阶段只做 object detection 是否足够？
-- 不文明行为是否需要 segmentation、pose estimation、tracking 或行为识别模型？
-- 长椅站立 / 躺卧是否需要人体姿态或时序判断？
-- 踩踏草坪是否需要草坪区域分割或场景区域标注？
-- 占用消防通道是否需要消防通道区域标注？
-- 垃圾抓取是否需要 YOLO11-seg / FastSAM 输出 mask？
-- tracking 使用 ByteTrack、DeepSORT，还是其他方案？
-- YOLO11m 和 YOLO11s 的评估指标和速度目标是什么？
-- 大模型 / VLM 候选是否以 Qwen3-VL-32B 为当前优先候选，是否还需要对比 Qwen2.5-VL、InternVL 或其他模型？
-- Qwen3-VL-32B 是否已经具备运行环境？
-- 是否需要搭建本地标注工具，例如 CVAT、Label Studio 或 LabelImg？
-- Qwen3-VL-32B 输出候选 bbox 的格式如何与标注工具衔接？
-- `roboflow_aerosol_trash_detection` 的 `Aerosol` polygon-to-bbox 数据因明显错框已从 canonical `spray_can` clean dataset 暂时移除；后续是重新人工修正 / 重新标注 Trash 来源，还是直接放弃该来源？
-- `roboflow_taco_aerosol` 的少量 `Aerosol` polygon-to-bbox 数据当前保留；是否长期保留仍需要根据后续人工检查和训练效果决定。
-- `skate_cva2`、`skate_practicas`、`skate_unity` 三个公开 skateboard 来源已合并到 `datasets_clean/skateboard/`；是否全部长期保留，需要根据 preview 人工检查和后续训练效果决定。
-- `stove_butane` 和 `stove_mix` 中的 `Cast Iron Gas Burners`、`Fire_Butane Stove`、`Fire_Gas Stove` 已临时纳入 `portable_gas_stove` clean dataset；是否全部符合“便携卡式炉 / 便携燃气炉本体”定义，需要人工 preview 判断。
+- 五类行为的比赛判定边界和验收样例是什么？
+- 是否需要独立 YOLO、segmentation、pose、tracking、区域规则或 VLM 组合？
+- 需要哪些 bbox、mask、pose、区域或视频片段标注？
+- behavior module 的数据负责人、实现负责人和时间表是什么？
+- 在比赛剩余时间内，behavior module 的最小可交付范围是什么？
 
-## 比赛与规则
+## Repo 与交付
 
-- 比赛是否限制模型大小、算力、联网能力或外部大模型使用？
-- 是否允许 VLM 兜底复核？
-- 识别结果如何影响机器人动作或比赛评分？
-- 每个场景允许的识别时间和动作等待时间是多少？
-- 禁带品 10 秒安检窗口内，允许几次大模型复核？
+- `scripts/` 中哪些早期 dataset tools 仍需长期保留？
+- 最终部署包是否单独建目录，以及哪些配置可以提交 GitHub？
+- 训练 run、best.pt、TensorRT engine 和部署包如何建立版本对应关系？
