@@ -70,3 +70,5 @@ runtime_outputs/
 
 test_images/
 runtime_outputs/
+
+*.egg-info/
