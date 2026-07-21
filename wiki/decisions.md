@@ -56,11 +56,11 @@
 - 决策：prohibited model -> `prohibited_items`；garbage model -> `garbage`；behavior module -> `uncivilized_behavior`。
 - 说明：不同模型保留各自 class id，不创建统一全局 class id，也不修改最终 labels。
 
-### D010：高置信直返，VLM 条件式兜底
+### D010：VLM 使用可配置启用方式
 
-- 日期：2026-07-18
-- 决策：高置信模型结果直接返回；低置信、遮挡或歧义结果才请求 Qwen / VLM。
-- 说明：VLM 不处理所有图片或全部帧。
+- 日期：2026-07-18，2026-07-20 更新
+- 决策：Qwen / VLM provider 默认关闭，detector-only Pipeline 必须保持可用；provider 启用后对每张输入图片执行一次完整原图 Review。
+- 说明：旧的“只复核低置信候选 crop”假设已被全图 Review 决策替代。
 
 ### D011：全链路目标为 10 秒，但必须实测
 
@@ -155,6 +155,30 @@
 
 - 日期：2026-07-19
 - 决策：`pyproject.toml` 的 `requires-python` 为 `>=3.10`，与当前类型注解语法保持一致。
+
+### D027：Review 必须独立检查完整原图
+
+- 日期：2026-07-20
+- 决策：VLM 接收完整原始图片和 Detection Summary；Summary 只作为 YOLO 上下文，不能限制 VLM 的观察范围。
+- 说明：VLM 应能确认、拒绝或纠正 YOLO，也能发现 YOLO 完全漏掉的项目类别目标。
+
+### D028：定位始终由 YOLO 负责
+
+- 日期：2026-07-20
+- 决策：VLM 只提供语义理解，不输出或修正 bbox、mask、polygon、pose 等定位信息。
+- 说明：VLM-only finding 可以没有 geometry；Response Parser 应拒绝 VLM 返回定位字段。
+
+### D029：Fusion 必须保留所有来源
+
+- 日期：2026-07-20
+- 决策：最终 `PipelineResponse` 同时保留原始 YOLO observations、VLM review decisions/findings 和 final fusion decisions，任何来源不得被静默丢弃。
+- 说明：YOLO 被拒绝或纠正时仍保留原 observation 和 bbox，由 `reject_yolo` / `correct_yolo` 决策表达最终语义；VLM-only finding 使用 `add_vlm_finding` 且不伪造 bbox。
+
+### D030：Qwen2.5-VL 通过独立 provider 接入
+
+- 日期：2026-07-20
+- 决策：当前实现使用 OpenAI-compatible HTTP provider，通过配置管理 endpoint、model ID、认证环境变量、timeout 和生成参数。
+- 说明：真实 Qwen2.5-VL 服务参数待确认；provider、parser 或 Fusion 失败时保留 detector 结果并降级为 `partial_success`。
 
 ## 被替代的历史方案
 

@@ -14,10 +14,10 @@
 
 禁带品和垃圾数据准备已基本完成，两个独立 YOLO11m 已在外部训练机完成训练。项目当前进入：
 
-- 将两个已训练权重交付到 Mac，完成正式 Runtime 的真实权重 smoke test。
-- 在 Mac 上验证已实现的共享多模型 Runtime Pipeline。
+- 两个已训练 detector 已在 macOS 和 NVIDIA Thor 上完成 Runtime 实际运行验证。
+- 当前扩展共享 Runtime，形成 Detection -> Detection Summary -> 全图 Review -> Fusion -> Output 链路。
 - 准备 NVIDIA Jetson AGX Thor Developer Kit 的多模型部署和 TensorRT 验证。
-- 优化高置信直返、低置信 VLM 复核的 10 秒内完整链路。
+- 接入真实 Qwen2.5-VL 服务并验证 10 秒超时与降级行为。
 
 不文明行为尚未形成最终数据集和模型，需要独立设计并通过 behavior module 接入同一 Runtime Pipeline。
 
@@ -42,14 +42,16 @@
 - enabled detection module 必须声明有序 `expected_class_names`；Ultralytics 权重加载后、图片处理前严格校验类别 ID、数量、名称和顺序。
 - Pipeline 根据模型来源写入 `task_group`，不同模型保留各自 class id 空间。
 - 跨 task group 高 IoU 结果全部保留，并互相标记 `cross_model_overlap`，不实施业务优先级删除。
-- 低置信或冲突 observation 标为 `review.status: pending`；当前不运行真正的 Qwen / VLM。
+- 已实现 Detection Summary、Qwen2.5-VL provider 接口、全图 Prompt Builder、严格 Response Parser 和最终 Fusion。
+- VLM 接收完整原图，Detection Summary 仅作为上下文；VLM 可以确认、拒绝、纠正 YOLO，并报告没有 bbox 的漏检 finding。
+- bbox 始终由 YOLO observation 提供；VLM 不输出或修正坐标。
 - JSON 与 Preview 使用同一个最终 `PipelineResponse`，Preview 不重新推理或重算 bbox。
 - Fusion 或 Review 失败不会删除成功模块的 observations；结果保留并以 `partial_success` 和阶段错误返回。
 - `Observation.track_id` 已预留且单图流程默认为 `null`；Tracking 和多帧融合尚未实现。
 - 当前执行策略固定为 sequential，只记录耗时，尚未实现强制 timeout 或 10 秒 deadline。
-- behavior、VLM 推理和 TensorRT 均保留接口或 schema 扩展点，但没有伪造实现。
+- behavior 和 TensorRT 仍保留接口或 schema 扩展点；Qwen provider 已实现，但尚未连接真实 VLM 服务。
 
-核心自动测试使用 FakeBackend，不依赖真实权重；当前 Mac 尚未拿到两个正式权重，因此未运行真实模型 smoke test。
+核心自动测试使用 FakeBackend 和 mock HTTP，不调用真实 YOLO 或 VLM；detector 实际运行已由 macOS 与 Thor 验证。
 
 Runtime Python 版本要求为 3.10 或更高。
 
@@ -77,9 +79,9 @@ Mac 已清理早期 `data/`、`datasets_raw/`、`datasets_stage/`、`datasets_cl
 
 尚需确认：
 
-- 两个正式权重的交付路径、版本、哈希和 class names。
+- 两个正式权重的最终版本、哈希和部署产物对应关系。
 - 两个 detector 在 Thor 上继续串行还是改为并行运行。
 - 机器人图片传输和结构化输出协议。
 - Thor 实际 JetPack / TensorRT / CUDA / ROS2 / Docker 环境。
 - behavior module 的模型、数据和推理形式。
-- VLM 的运行设备、联网条件和超时降级行为。
+- Qwen2.5-VL 的 endpoint、准确模型版本、运行设备、认证方式和实测超时降级行为。

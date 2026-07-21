@@ -2,6 +2,38 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-07-20 Runtime 全图 VLM Review 与 Fusion 实现
+
+本次在现有 detector Pipeline 上增量实现 `Detection -> Detection Summary -> Review -> Fusion -> Output`，没有重写或移除原检测链路。
+
+实现内容：
+
+- 新增 Detection Summary，保留 YOLO observation ID、任务、类别、置信度、bbox、冲突和 review 原因。
+- 新增 Qwen2.5-VL provider interface、OpenAI-compatible HTTP provider、全图 Prompt Builder 和严格 Response Parser。
+- Review 始终发送完整原图；Detection Summary 仅作为上下文。即使 YOLO 没有 detection，启用的 provider 仍可报告漏检目标。
+- parser 要求逐条复核 YOLO detection，校验 task/class 目录，并拒绝 VLM 返回 bbox、mask、polygon 等定位字段。
+- 新增 Final Fusion，显式输出 `keep_yolo`、`reject_yolo`、`correct_yolo` 和 `add_vlm_finding`。
+- 原始 YOLO observations、VLM decisions/findings 和 fusion decisions 全部保留；VLM-only finding 不包含 geometry。
+- Preview 继续直接使用最终 `PipelineResponse` 的 YOLO bbox，并在信息区显示纠正、拒绝和无 bbox 的 VLM-only finding。
+- provider 默认关闭；Review、parser 或 Fusion 失败时 detector 结果仍保留，并返回阶段错误与 `partial_success`。
+- 示例配置新增 Qwen provider 参数，单次 HTTP timeout 默认 10 秒。
+
+验证结果：
+
+- 46 项 unittest 全部通过。
+- `compileall` 通过。
+- `git diff --check` 通过。
+- Qwen 测试使用 mock HTTP，确认请求包含完整图片 data URL 与 Detection Summary；没有访问真实 VLM 服务。
+- 真实 Qwen2.5-VL 联调、完整 10 秒 deadline 和效果评估尚未执行。
+
+提交记录：
+
+- `f922141`：Review 数据契约与 Detection Summary。
+- `3afc712`：Qwen 全图 Review provider、Prompt Builder、Parser 与专项测试。
+- `0b8243e`：Pipeline、Final Fusion、Preview 与回归测试集成。
+
+本次没有训练模型、修改数据集、安装依赖、下载模型、push 或改写现有 detector 权重。
+
 ## 2026-07-19 Runtime Pipeline v1 安全性修复
 
 本次严格限定在真实权重 smoke test 前的运行安全性修复，没有扩展新的业务能力。

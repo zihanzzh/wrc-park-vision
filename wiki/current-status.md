@@ -2,60 +2,65 @@
 
 ## 当前阶段
 
-禁带品和垃圾数据准备已基本完成，两个独立 YOLO11m 已在外部训练机完成训练。Mac 仓库已完成正式 Runtime Pipeline v1 实现，但尚未获得两个正式权重，因此还没有执行真实模型 smoke test。
+禁带品与垃圾两个独立 detector 已完成训练，并已在 macOS 和 NVIDIA Thor 上跑通现有 Runtime 检测链路。当前进入 VLM Review Pipeline 实现与联调阶段。
 
-当前没有训练、Thor 部署、TensorRT 推理、behavior 推理或 VLM 推理在本轮发生。
+本轮已完成代码实现与 mock 自动测试，没有运行真实 Qwen2.5-VL、训练模型、修改数据集、安装依赖或 push。
 
-## Runtime v1
+## Runtime 当前链路
+
+```text
+完整图片
+  -> prohibited_items / garbage detection modules
+  -> Detection Summary
+  -> 可选 Qwen2.5-VL 全图 Review
+  -> Final Fusion
+  -> PipelineResponse
+  -> result.json / preview.jpg
+```
 
 已实现：
 
-- `pyproject.toml` 与 `src/` Python package。
-- 可提交的 `configs/runtime.example.yaml` 和 gitignored 的本地配置约定。
-- 配置环境变量展开、disabled module 支持、enabled 模型路径启动校验。
-- enabled detection module 的 `expected_class_names` 配置校验，以及 Ultralytics 权重 class ID / 数量 / 名称 / 顺序启动校验。
-- 通用 `TaskModule`、`DetectionModule` 和 `InferenceBackend` 接口。
-- Ultralytics backend，模型在 Pipeline 初始化时加载一次，禁止缺失路径触发自动下载。
-- 通过配置启用 `prohibited_items` 和 `garbage`，主 Pipeline 不写死模块数量、类别或模型路径。
-- 单图输入校验、sequential 多模块执行和单模块故障隔离。
-- 初始化 load 失败清理此前已加载模块，`close()` 对所有模块执行 best-effort 清理。
-- 顶层 `success`、`partial_success`、`failure` 状态。
-- 统一 `PipelineResponse` / `Observation` schema，bbox 同时提供像素和归一化 xyxy。
-- 跨 task group 重叠结果全部保留并标记 `cross_model_overlap`。
-- `low_confidence`、`cross_model_overlap`、`module_failure` review decision。
-- Fusion / Review 独立故障隔离，后处理失败时保留正常 observations 并返回 `partial_success`。
-- `Observation.track_id` 可空字段、datetime timestamp 和非负 frame index；Tracking 本身尚未实现。
-- 原子 JSON 写出，以及直接复用最终 observation 的 Preview。
-- CLI 和不依赖真实权重的 FakeBackend 自动测试。
+- 配置驱动的通用 task modules，当前接入 `prohibited_items` 和 `garbage`。
+- Ultralytics backend 启动时加载一次模型，并严格校验 `expected_class_names`。
+- 单模块故障隔离、稳定 observation ID、跨 task group 冲突保留与标记。
+- Detection Summary，向 VLM 提供 YOLO 语义上下文，但不限制 VLM 的全图观察范围。
+- Qwen2.5-VL provider interface、OpenAI-compatible HTTP provider、Prompt Builder 和严格 Response Parser。
+- VLM 可以确认、拒绝或纠正 YOLO 类别，也可以报告 YOLO 完全漏检的目标。
+- VLM 不承担定位，不允许返回 bbox；VLM-only finding 的 `geometry` 为 `null`。
+- Final Fusion 同时保留原始 YOLO observations、VLM decisions/findings 和显式 fusion decisions，不静默删除结果。
+- Review 或 Fusion 失败时保留 detector 结果，并返回阶段错误和 `partial_success`。
+- JSON 与 Preview 使用同一个最终 `PipelineResponse`；VLM-only finding 只在预览信息区显示，不绘制推测框。
+- Qwen provider 默认关闭，detector-only 配置继续保持可用。
 
-当前明确未实现：
+当前明确未完成：
 
+- 真实 Qwen2.5-VL endpoint 联调与效果验证。
+- 请求级 10 秒 deadline；当前 provider 只有单次 HTTP 10 秒 timeout。
 - behavior 模型内部逻辑。
-- 真正的 Qwen / VLM 调用与结果回写。
-- TensorRT backend 和 Thor 部署。
-- API、ROS2、stream、tracking、并行执行和强制 timeout。
+- TensorRT backend、正式 Thor engine 部署与 benchmark。
+- API、ROS2、stream、tracking 和并行执行。
 
 ## 验证状态
 
-- 自动测试：35 项通过。
-- Python 语法编译检查：通过。
-- 测试不加载真实权重，不运行 YOLO。
-- 当前 `.venv` 尚未按新 `pyproject.toml` 完整安装依赖，本轮没有安装或升级任何包。
-- 真实权重 smoke test：待执行。
-- 真实权重的 `expected_class_names` 启动校验：逻辑和纯函数测试已完成，真实权重尚未验证。
-- Thor benchmark 与 10 秒完整链路验证：待执行。
+- 自动测试：46 项通过。
+- Python `compileall`：通过。
+- `git diff --check`：通过。
+- Qwen 请求测试使用 mock HTTP，确认发送完整图片 data URL 和 Detection Summary prompt，没有访问真实服务。
+- detector 实际运行：macOS 与 NVIDIA Thor 已跑通。
+- VLM 实际运行：尚未执行。
+- 10 秒完整链路：尚未实测。
 
 ## 数据与设备边界
 
 - 正式数据继续只保存在 3090 的 `datasets_final/prohibited_items/` 和 `datasets_final/garbage/`。
 - Mac 不保存正式数据集，不修改 labels。
-- 建议将两个本地权重放到 gitignored 的 `models/`，并通过环境变量配置路径。
-- Thor 仍是最终边缘部署目标；Orange Pi / RK3588 不是当前主线。
+- 本地权重和 `configs/runtime.local.yaml` 保持 gitignored。
+- Thor 是最终边缘部署目标；Orange Pi / RK3588 不是当前主线。
 
 ## 下一步
 
-1. 提供 `prohibited_items_yolo11m_best.pt` 与 `garbage_yolo11m_best.pt`，同时确认各自 class names、训练版本和文件哈希。
-2. 按 `pyproject.toml` 建立可复现环境，不做全局安装。
-3. 使用一张真实园区或模拟比赛照片运行两个 enabled modules。
-4. 人工核对 `result.json` 与 `preview.jpg` 是否对应同一 observation、坐标和模型来源。
-5. 记录 Mac 的真实 smoke test 耗时，再进入 Thor TensorRT backend 和 benchmark 阶段。
+1. 确认 Qwen2.5-VL 的实际服务 endpoint、model ID、认证方式和运行设备。
+2. 在 gitignored 本地配置中启用 Review provider，使用固定验收图片做真实 VLM smoke test。
+3. 人工核对 confirm / reject / correct / VLM-only finding，以及 JSON 与 Preview 一致性。
+4. 测量 detector、Review、Fusion 和完整请求耗时，验证 10 秒超时与降级策略。
+5. 根据真实响应稳定性调整 prompt、parser 容错边界和比赛动作策略。

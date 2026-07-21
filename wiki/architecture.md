@@ -12,13 +12,10 @@ Robot sends one image
   -> Run prohibited_items detector
   -> Run garbage detector
   -> Run behavior detector or behavior pipeline
-  -> Normalize and merge detections
-  -> Add task_group metadata
-  -> Resolve duplicate/conflicting detections if needed
-  -> High-confidence results return directly
-  -> Low-confidence / occluded / ambiguous cases trigger Qwen / VLM
-  -> Fuse results
-  -> Return within 10 seconds or use fallback response
+  -> Normalize detections and build Detection Summary
+  -> Optional Qwen2.5-VL independently reviews the full image
+  -> Fuse YOLO observations, VLM decisions and VLM-only findings
+  -> Return PipelineResponse, JSON and Preview
 ```
 
 已确认：
@@ -28,12 +25,15 @@ Robot sends one image
 - 多个独立模型共享同一个 Runtime Pipeline。
 - 机器人只发送图片，不提供 `taskId`、`taskType`、`mode` 或 `category`。
 - Pipeline 根据模型来源写入 `task_group`，不依赖机器人提供任务类型。
-- 高置信度结果直接返回；Qwen / VLM 只处理低置信度、遮挡或类别歧义样本。
+- Qwen / VLM 启用时必须检查完整原图；Detection Summary 只是上下文，不是候选范围。
+- VLM 只负责语义理解，不负责 bbox、mask 或其他定位。
+- VLM 可以报告 YOLO 完全漏检的目标；这类 finding 可以没有 bbox。
+- 原始 YOLO observations、VLM findings 和最终 fusion decisions 必须同时保留。
 - 10 秒是完整链路目标；是否满足必须在 Thor 上实测，当前不作未经验证的性能承诺。
 
 该路线是比赛时间限制下的风险控制方案。数据正确性和可交付性优先于单模型架构的简洁性。
 
-## Runtime v1 已实现范围
+## Runtime 已实现范围
 
 正式 Runtime 代码位于 `src/wrc_park_vision/runtime/`，当前实现链路为：
 
@@ -46,7 +46,9 @@ image path
   -> backend 输出转为统一 Observation
   -> 稳定排序并分配 observation id
   -> 跨 task_group IoU 冲突标记
-  -> ReviewPolicy 生成 pending / not_required
+  -> 生成 Detection Summary
+  -> 可选 Qwen2.5-VL 全图 Review
+  -> Final Fusion 生成显式决策
   -> PipelineResponse
   -> result.json
   -> 使用同一个 PipelineResponse 绘制 preview.jpg
@@ -58,13 +60,15 @@ image path
 - Ultralytics backend 在 Pipeline 初始化时加载一次模型，并立即把 Ultralytics result 转成内部普通对象。
 - enabled detection module 必须配置有序 `expected_class_names`。权重加载后严格比较 class ID 连续性、类别数量、名称和顺序，校验发生在任何图片处理之前。
 - `bbox_xyxy` 是 canonical 像素坐标；`bbox_normalized_xyxy` 从同一个 geometry 计算。
-- Fusion 失败时使用原始 normalized observations 的稳定排序深拷贝作为 fallback；Review 失败时保留 Fusion 结果。只要至少一个模块成功，后处理失败返回 `partial_success`。
+- Review 或 Final Fusion 失败时保留已有 YOLO observations；只要至少一个模块成功，后处理失败返回 `partial_success`。
 - `Observation.track_id` 已作为可空字段预留，`RequestContext` 支持 ISO 8601 timestamp 和非负 frame index；当前没有实现 Tracking 或多帧融合。
 - schema 已为 `mask`、`pose`、`region` 和 `relation` 预留 observation geometry。
 - TensorRT backend 和 behavior module 当前明确返回未实现错误，不伪造能力。
-- ReviewPolicy 当前只决定是否需要复核，不运行 VLM。
+- Review provider 默认关闭；启用后通过 OpenAI-compatible endpoint 调用 Qwen2.5-VL，发送完整原图和 Detection Summary。
+- Response Parser 要求逐条复核 Detection Summary 中的 YOLO detection，并拒绝 VLM 输出定位字段。
+- Final Fusion 不修改原始 YOLO 类别和 bbox；纠正、拒绝和 VLM-only finding 通过独立决策记录表达。
 - 当前只支持单张图片路径 CLI、顺序执行和耗时记录。
-- 当前没有实现 API、ROS2、tracking、并行执行、强制 timeout 或 Thor 部署。
+- 当前没有实现 API、ROS2、tracking、并行执行、请求级 deadline 或 TensorRT backend；provider HTTP timeout 已配置为 10 秒。
 - Runtime 要求 Python 3.10 或更高版本。
 
 ## 路线变更原因
@@ -173,16 +177,25 @@ Runtime v1 采用保守规则：
 
 后续是否需要置信度校准或业务规则，必须依据真实冲突样本决定。
 
-### 8. 置信度与 Qwen / VLM
+### 8. Detection Summary 与 Qwen / VLM
 
-- 高置信且无冲突：当前标为 `review.status: not_required`，不是 `confirmed`。
-- 低于 review 阈值或存在跨任务冲突：标为 `review.status: pending`。
-- 模块失败：触发顶层 `review.reasons: [module_failure]`，不伪造 observation。
-- 真正的目标裁剪、VLM 调用、复核回写和超时降级尚未实现。
+- Detection Summary 包含 observation ID、`task_group`、类别、置信度、YOLO bbox、冲突和 review 原因。
+- Summary 只提供上下文；Qwen2.5-VL 接收完整图片并独立观察全图。
+- VLM 对每条 YOLO detection 返回 `confirmed`、`rejected`、`corrected` 或 `uncertain`。
+- VLM 可以通过 `new_findings` 报告 YOLO 漏检的项目类别目标；finding 不包含 bbox。
+- parser 严格校验 observation 覆盖、重复 ID、任务类别目录和返回结构，并拒绝 bbox / mask / polygon 等额外定位字段。
+- provider 默认关闭，因此现有 detector-only Pipeline 继续工作；启用 provider 后每张输入图片执行一次全图 Review。
+- VLM 真实延迟与效果尚未验证，不能用 mock 测试推断比赛性能。
 
-VLM 不处理所有图片或所有帧。YOLO 推理预计不是主要时间瓶颈，VLM 更可能成为主要延迟来源，但必须通过实际 profiling 验证。
+### 9. Final Fusion 与输出
 
-### 9. 10 秒预算与降级
+- `observations` 保留原始 YOLO 结果及其 geometry，不因 VLM 拒绝或纠正而删除或改写。
+- `review.decisions` 与 `review.findings` 保留 VLM 原始语义结论。
+- `fusion.decisions` 明确记录 `keep_yolo`、`reject_yolo`、`correct_yolo` 或 `add_vlm_finding`。
+- `geometry_source: yolo` 表示坐标来自 YOLO；VLM-only finding 使用 `geometry_source: none`。
+- Preview 从最终 `PipelineResponse` 读取同一份 observation 和 fusion decision。VLM-only finding 只显示文字，不创建框。
+
+### 10. 10 秒预算与降级
 
 10 秒覆盖图片接收、多个视觉模块、结果规范化、冲突处理、可选 VLM、融合和序列化。
 
@@ -195,9 +208,11 @@ Runtime 应支持：
 - 对未确认结果返回 `suspected` / `uncertain`。
 - 记录各阶段耗时和降级原因。
 
+当前 Qwen provider 已有 10 秒 HTTP timeout；完整请求级 deadline、跨阶段预算和主动取消仍待实现。Review 请求、响应解析或 Fusion 失败时，Runtime 保留 YOLO observations 并返回 `partial_success`。
+
 三模型是否能在 10 秒内完成尚未验证。最终依据 Thor benchmark 决定串行/并行、模型尺寸和触发策略。
 
-### 10. 日志与数据回流
+### 11. 日志与数据回流
 
 记录：
 
@@ -268,11 +283,12 @@ TensorRT engine 应在 Thor 实际环境中构建或验证，避免脱离目标 
 - 已完成：禁带品和垃圾原始最终数据的人工检查与整理。
 - 已暂停：`unified_detection` 统一 14 类训练路线。
 - 已完成：两个独立 YOLO11m 在外部训练机完成训练，权重尚待交付当前 Mac。
-- 已完成：共享多模型 Runtime v1，包括配置、Ultralytics backend、模块调度、统一 schema、冲突标记、review decision、JSON、Preview、CLI 和 FakeBackend 测试。
-- 下一步：放置两个正式权重，用真实照片完成双模型 smoke test，并检查 JSON / Preview 一致性。
+- 已完成：共享多模型 Runtime detector 链路，并在 macOS 与 Thor 跑通两个真实模型。
+- 已完成：Detection Summary、Qwen2.5-VL provider interface、全图 Prompt Builder、严格 Response Parser、Final Fusion 和更新后的 Preview。
+- 下一步：连接真实 Qwen2.5-VL endpoint，检查 JSON / Preview 与人工判断的一致性。
 - 下一步：评估两个模型的误报、漏报、冲突和各类表现。
 - 下一步：在 Thor 构建多个 TensorRT engine，并 benchmark 串行/并行策略。
-- 后续：接入 behavior module、机器人接口和 VLM 复核。
+- 后续：接入 behavior module、机器人接口和 TensorRT backend。
 - 后续：失败样本回流和模型迭代。
 
 ## 架构待确认
@@ -285,4 +301,5 @@ TensorRT engine 应在 Thor 实际环境中构建或验证，避免脱离目标 
 - 跨模型冲突在真实照片中的频率，以及是否需要置信度校准或业务规则。
 - behavior module 的模型与数据方案。
 - 机器人输入输出协议和 `suggestedAction` 职责边界。
-- VLM 现场设备、模型版本、联网条件和时间预算。
+- Qwen2.5-VL endpoint、具体模型版本、认证方式、现场设备、联网条件和时间预算。
+- 两个 detector 全部失败但 VLM 返回 finding 时，顶层状态应为 `failure` 还是 `partial_success`。

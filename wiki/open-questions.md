@@ -41,8 +41,11 @@
 - 多个 YOLO engine、结果融合和 VLM 各分配多少预算？
 - Qwen / VLM 具体运行在 3090、其他高算力设备还是 Thor？
 - 比赛现场是否允许额外设备和联网？
-- VLM 使用目标裁剪图、完整帧还是多帧序列？
+- 已确认单图 Review 使用完整原图；未来 behavior 是否还需要连续多帧序列？
+- Qwen2.5-VL 使用哪个准确模型版本、OpenAI-compatible endpoint、认证方式和部署设备？
+- 真实服务是否稳定遵循当前严格 JSON contract，是否需要有限重试或结构化输出约束？
 - VLM 超时后返回哪些已确认结果，机器人采取什么动作？
+- 两个 detector 全部失败但 VLM 返回 finding 时，顶层状态应为 `failure` 还是 `partial_success`？
 - 最终是否需要通过模型尺寸或触发策略降低链路时间？
 
 ## Thor 部署
