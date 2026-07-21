@@ -66,7 +66,7 @@ class ReviewProviderSettings(BaseModel):
     endpoint: Optional[str] = None
     model_id: Optional[str] = None
     api_key_env: Optional[str] = None
-    timeout_seconds: float = Field(default=8.0, gt=0.0)
+    timeout_seconds: float = Field(default=10.0, gt=0.0)
     max_tokens: int = Field(default=1200, gt=0)
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
 

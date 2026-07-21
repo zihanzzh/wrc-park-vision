@@ -187,6 +187,14 @@ class VLMFinding(BaseModel):
     geometry: None = None
 
 
+class VLMReviewResult(BaseModel):
+    provider: str
+    model_id: str
+    duration_ms: float = Field(ge=0.0)
+    decisions: list[VLMReviewDecision] = Field(default_factory=list)
+    findings: list[VLMFinding] = Field(default_factory=list)
+
+
 class FusionDecision(BaseModel):
     id: str
     action: FusionAction

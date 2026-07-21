@@ -48,6 +48,15 @@ review:
   cross_model_iou_threshold: 0.75
   review_cross_task_overlap: true
   review_module_failure: true
+  provider:
+    enabled: false
+    type: qwen2_5_vl
+    endpoint: null
+    model_id: null
+    api_key_env: WRC_VLM_API_KEY
+    timeout_seconds: 10
+    max_tokens: 1200
+    temperature: 0
 
 preview:
   enabled: true
