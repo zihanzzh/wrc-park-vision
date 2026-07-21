@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .schemas import BBoxGeometry, Conflict, Observation
+from .schemas import BBoxGeometry, Conflict, FusionDecision, FusionSummary, Observation, ReviewSummary
 
 
 def bbox_iou(first: BBoxGeometry, second: BBoxGeometry) -> float:
@@ -66,3 +66,55 @@ def merge_and_mark_conflicts(observations: list[Observation], iou_threshold: flo
     for observation in merged:
         observation.conflicts.sort(key=lambda conflict: conflict.observation_id)
     return merged
+
+
+def fuse_review_results(
+    observations: list[Observation],
+    review: ReviewSummary,
+) -> tuple[list[Observation], FusionSummary]:
+    """Preserve all YOLO observations and express semantic fusion as explicit decisions."""
+    preserved = [observation.model_copy(deep=True) for observation in observations]
+    review_by_id = {decision.observation_id: decision for decision in review.decisions}
+    decisions: list[FusionDecision] = []
+
+    for observation in preserved:
+        review_decision = review_by_id.get(observation.id)
+        action = "keep_yolo"
+        final_task_group = observation.task_group
+        final_class_name = observation.class_name
+        reasoning = None
+        if review_decision is not None:
+            reasoning = review_decision.reasoning
+            if review_decision.verdict == "rejected":
+                action = "reject_yolo"
+            elif review_decision.verdict == "corrected":
+                action = "correct_yolo"
+                final_task_group = review_decision.corrected_task_group
+                final_class_name = review_decision.corrected_class_name
+
+        decisions.append(
+            FusionDecision(
+                id=f"fusion-{len(decisions) + 1:04d}",
+                action=action,
+                observation_id=observation.id,
+                final_task_group=final_task_group,
+                final_class_name=final_class_name,
+                geometry_source="yolo",
+                reasoning=reasoning,
+            )
+        )
+
+    for finding in review.findings:
+        decisions.append(
+            FusionDecision(
+                id=f"fusion-{len(decisions) + 1:04d}",
+                action="add_vlm_finding",
+                finding_id=finding.id,
+                final_task_group=finding.task_group,
+                final_class_name=finding.class_name,
+                geometry_source="none",
+                reasoning=finding.reasoning,
+            )
+        )
+
+    return preserved, FusionSummary(status="completed", decisions=decisions)

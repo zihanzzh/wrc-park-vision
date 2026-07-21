@@ -1,11 +1,10 @@
-"""VLM review decisions without performing VLM inference."""
+"""Review policy and full-image VLM review coordination."""
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-
 from .config import ReviewSettings
-from .schemas import ModuleSummary, Observation, ObservationReview, ReviewSummary, ValidatedImage
+from .schemas import DetectionSummary, ModuleSummary, Observation, ObservationReview, ReviewSummary, ValidatedImage
+from .vlm.base import ReviewProvider
 
 
 REASON_ORDER = ("low_confidence", "cross_model_overlap", "module_failure")
@@ -37,15 +36,8 @@ class ReviewPolicy:
         if self.settings.review_module_failure and any(module.status == "failure" for module in modules):
             top_reasons.add("module_failure")
         ordered = [reason for reason in REASON_ORDER if reason in top_reasons]
-        return reviewed, ReviewSummary(required=bool(ordered), reasons=ordered)
-
-
-class ReviewProvider(ABC):
-    """Future review inference contract; no concrete VLM provider exists yet."""
-
-    @abstractmethod
-    def review(self, image: ValidatedImage, observations: list[Observation]) -> list[Observation]:
-        """Return reviewed observations, including confirmed/rejected status when supported."""
+        status = "pending" if ordered else "not_required"
+        return reviewed, ReviewSummary(required=bool(ordered), reasons=ordered, status=status)
 
 
 class ReviewCoordinator:
@@ -60,8 +52,38 @@ class ReviewCoordinator:
         image: ValidatedImage,
         observations: list[Observation],
         modules: list[ModuleSummary],
+        detection_summary: DetectionSummary,
     ) -> tuple[list[Observation], ReviewSummary]:
         reviewed, summary = self.policy.apply(observations, modules)
-        if self.provider is None or not any(item.review.required for item in reviewed):
+        if self.provider is None:
             return reviewed, summary
-        return self.provider.review(image, reviewed), summary
+
+        result = self.provider.review(image, detection_summary)
+        decisions_by_id = {decision.observation_id: decision for decision in result.decisions}
+        for observation in reviewed:
+            decision = decisions_by_id.get(observation.id)
+            if decision is None:
+                continue
+            if decision.verdict == "confirmed":
+                observation.review.status = "confirmed"
+            elif decision.verdict == "rejected":
+                observation.review.status = "rejected"
+            elif decision.verdict == "corrected":
+                observation.review.status = "confirmed"
+            else:
+                observation.review.status = "pending"
+            observation.review.required = True
+            if "full_image_vlm_review" not in observation.review.reasons:
+                observation.review.reasons.append("full_image_vlm_review")
+
+        return reviewed, ReviewSummary(
+            required=True,
+            reasons=summary.reasons,
+            attempted=True,
+            status="completed",
+            provider=result.provider,
+            model_id=result.model_id,
+            duration_ms=result.duration_ms,
+            decisions=result.decisions,
+            findings=result.findings,
+        )

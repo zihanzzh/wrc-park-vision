@@ -9,7 +9,13 @@ from wrc_park_vision.runtime.backends.base import BackendDetection
 from wrc_park_vision.runtime.modules.detection import DetectionModule
 from wrc_park_vision.runtime.pipeline import RuntimePipeline
 from wrc_park_vision.runtime.review import ReviewProvider
-from wrc_park_vision.runtime.schemas import Observation, ValidatedImage
+from wrc_park_vision.runtime.schemas import (
+    DetectionSummary,
+    VLMFinding,
+    VLMReviewDecision,
+    VLMReviewResult,
+    ValidatedImage,
+)
 
 from .helpers import FakeBackend, make_config, write_test_image
 
@@ -97,7 +103,7 @@ class PipelineTests(unittest.TestCase):
 
     def test_review_failure_keeps_fused_observations(self) -> None:
         class FailingReviewProvider(ReviewProvider):
-            def review(self, image: ValidatedImage, observations: list[Observation]) -> list[Observation]:
+            def review(self, image: ValidatedImage, summary: DetectionSummary) -> VLMReviewResult:
                 raise RuntimeError("review broke")
 
         backend = FakeBackend("good", [BackendDetection(0, "spray_can", 0.3, (10, 10, 30, 40))])
@@ -113,9 +119,55 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(response.status, "partial_success")
         self.assertEqual(len(response.observations), 1)
         self.assertEqual(response.observations[0].id, "obs-0001")
-        self.assertEqual(response.review.reasons, ["review_failure"])
+        self.assertEqual(response.review.reasons, ["low_confidence", "review_failure"])
         self.assertTrue(any(error.stage == "review" and error.code == "review_failure" for error in response.errors))
         self.assertFalse(any(error.code == "fusion_failure" for error in response.errors))
+
+    def test_full_image_review_and_fusion_preserve_all_sources(self) -> None:
+        class SemanticReviewProvider(ReviewProvider):
+            def review(self, image: ValidatedImage, summary: DetectionSummary) -> VLMReviewResult:
+                self.image_size = image.image.size
+                return VLMReviewResult(
+                    provider="fake_vlm",
+                    model_id="fake-vl",
+                    duration_ms=2,
+                    decisions=[
+                        VLMReviewDecision(
+                            observation_id=summary.detections[0].observation_id,
+                            verdict="corrected",
+                            corrected_task_group="prohibited",
+                            corrected_class_name="prohibited_class",
+                        )
+                    ],
+                    findings=[
+                        VLMFinding(
+                            id="vlm-0001",
+                            task_group="prohibited",
+                            class_name="prohibited_class",
+                            reasoning="missed object in full image",
+                        )
+                    ],
+                )
+
+        provider = SemanticReviewProvider()
+        backend = FakeBackend("good", [BackendDetection(0, "spray_can", 0.9, (10, 10, 30, 40))])
+        module = DetectionModule("prohibited", "prohibited", "good", backend)
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = write_test_image(Path(directory) / "image.jpg")
+            response = RuntimePipeline(
+                make_config(("prohibited",)),
+                [module],
+                review_provider=provider,
+            ).process(image_path)
+
+        self.assertEqual(provider.image_size, (100, 80))
+        self.assertEqual(response.observations[0].class_name, "spray_can")
+        self.assertEqual(len(response.review.findings), 1)
+        self.assertEqual(
+            [decision.action for decision in response.fusion.decisions],
+            ["correct_yolo", "add_vlm_finding"],
+        )
+        self.assertEqual(response.fusion.decisions[1].geometry_source, "none")
 
     def test_initialization_failure_closes_previously_loaded_modules(self) -> None:
         first_backend = FakeBackend("first", close_error=RuntimeError("close also broke"))

@@ -22,7 +22,6 @@ def build_detection_summary(
     settings: ReviewSettings,
 ) -> DetectionSummary:
     items: list[DetectionSummaryItem] = []
-    counts = Counter(observation.task_group for observation in observations)
     for observation in observations:
         if not isinstance(observation.geometry, BBoxGeometry):
             continue
@@ -39,6 +38,7 @@ def build_detection_summary(
                 review_reasons=observation_review_reasons(observation, settings),
             )
         )
+    counts = Counter(item.task_group for item in items)
     return DetectionSummary(
         total_detections=len(items),
         counts_by_task_group=dict(sorted(counts.items())),

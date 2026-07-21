@@ -11,10 +11,13 @@ from PIL import Image, UnidentifiedImageError
 
 from .backends import TensorRTBackend, UltralyticsBackend
 from .config import ModuleSettings, RuntimeConfig
-from .fusion import merge_and_mark_conflicts, prepare_observations
+from .detection_summary import build_detection_summary
+from .fusion import fuse_review_results, merge_and_mark_conflicts, prepare_observations
 from .modules import BehaviorModule, DetectionModule, TaskModule
 from .review import ReviewCoordinator, ReviewProvider
 from .schemas import (
+    DetectionSummary,
+    FusionSummary,
     InputInfo,
     ModuleSummary,
     PipelineResponse,
@@ -24,6 +27,7 @@ from .schemas import (
     TimingInfo,
     ValidatedImage,
 )
+from .vlm import Qwen25VLProvider
 
 
 def validate_image(image_path: Path) -> ValidatedImage:
@@ -84,6 +88,18 @@ def build_modules(config: RuntimeConfig) -> list[TaskModule]:
     return modules
 
 
+def build_class_catalog(config: RuntimeConfig) -> dict[str, list[str]]:
+    catalog: dict[str, list[str]] = {}
+    for settings in config.modules:
+        if not settings.enabled or not settings.expected_class_names:
+            continue
+        names = catalog.setdefault(settings.task_group, [])
+        for class_name in settings.expected_class_names:
+            if class_name not in names:
+                names.append(class_name)
+    return catalog
+
+
 class RuntimePipeline:
     def __init__(
         self,
@@ -109,7 +125,18 @@ class RuntimePipeline:
                 except Exception:
                     pass
             raise
-        self.review = ReviewCoordinator(config.review, review_provider)
+        try:
+            class_catalog = build_class_catalog(config)
+            if review_provider is None and config.review.provider.enabled:
+                review_provider = Qwen25VLProvider(config.review.provider, class_catalog)
+            self.review = ReviewCoordinator(config.review, review_provider)
+        except Exception:
+            for loaded_module in loaded_modules:
+                try:
+                    loaded_module.close()
+                except Exception:
+                    pass
+            raise
 
     def process(
         self,
@@ -169,6 +196,9 @@ class RuntimePipeline:
 
         successful_modules = sum(summary.status == "success" for summary in summaries)
         postprocessing_failed = False
+        detection_summary_duration = None
+        review_duration = None
+        fusion_duration = None
         try:
             current_observations = merge_and_mark_conflicts(
                 observations,
@@ -179,13 +209,59 @@ class RuntimePipeline:
             current_observations = prepare_observations(observations)
             postprocessing_failed = True
 
+        summary_started = time.perf_counter()
+        detection_summary: DetectionSummary | None = None
         try:
-            reviewed, review_summary = self.review.apply(image, current_observations, summaries)
+            detection_summary = build_detection_summary(current_observations, self.config.review)
+            detection_summary_duration = (time.perf_counter() - summary_started) * 1000.0
         except Exception as exc:
-            errors.append(RuntimeErrorInfo(stage="review", code="review_failure", message=str(exc)))
-            reviewed = [observation.model_copy(deep=True) for observation in current_observations]
-            review_summary = ReviewSummary(required=True, reasons=["review_failure"])
+            errors.append(
+                RuntimeErrorInfo(stage="detection_summary", code="detection_summary_failure", message=str(exc))
+            )
+            detection_summary_duration = (time.perf_counter() - summary_started) * 1000.0
             postprocessing_failed = True
+
+        review_started = time.perf_counter()
+        if detection_summary is None:
+            reviewed, policy_summary = self.review.policy.apply(current_observations, summaries)
+            review_summary = ReviewSummary(
+                required=policy_summary.required,
+                reasons=[*policy_summary.reasons, "detection_summary_failure"],
+                attempted=False,
+                status="failed",
+            )
+        else:
+            try:
+                reviewed, review_summary = self.review.apply(
+                    image,
+                    current_observations,
+                    summaries,
+                    detection_summary,
+                )
+            except Exception as exc:
+                errors.append(RuntimeErrorInfo(stage="review", code="review_failure", message=str(exc)))
+                reviewed, policy_summary = self.review.policy.apply(current_observations, summaries)
+                provider = self.review.provider
+                review_summary = ReviewSummary(
+                    required=True,
+                    reasons=[*policy_summary.reasons, "review_failure"],
+                    attempted=provider is not None,
+                    status="failed",
+                    provider=getattr(provider, "provider_name", provider.__class__.__name__ if provider else None),
+                    model_id=getattr(provider, "model_id", None),
+                )
+                postprocessing_failed = True
+        review_duration = (time.perf_counter() - review_started) * 1000.0
+
+        fusion_started = time.perf_counter()
+        try:
+            fused_observations, fusion_summary = fuse_review_results(reviewed, review_summary)
+        except Exception as exc:
+            errors.append(RuntimeErrorInfo(stage="fusion", code="review_fusion_failure", message=str(exc)))
+            fused_observations = [observation.model_copy(deep=True) for observation in reviewed]
+            fusion_summary = FusionSummary(status="fallback")
+            postprocessing_failed = True
+        fusion_duration = (time.perf_counter() - fusion_started) * 1000.0
 
         if successful_modules == 0:
             status = "failure"
@@ -204,16 +280,28 @@ class RuntimePipeline:
                 context=request_context,
             ),
             modules=summaries,
-            observations=reviewed,
+            observations=fused_observations,
+            detection_summary=detection_summary,
             review=review_summary,
+            fusion=fusion_summary,
             errors=errors,
-            timing_ms=TimingInfo(total=(time.perf_counter() - started) * 1000.0),
+            timing_ms=TimingInfo(
+                total=(time.perf_counter() - started) * 1000.0,
+                detection_summary=detection_summary_duration,
+                review=review_duration,
+                fusion=fusion_duration,
+            ),
         )
 
     def close(self) -> None:
         for module in self.modules:
             try:
                 module.close()
+            except Exception:
+                pass
+        if self.review.provider is not None:
+            try:
+                self.review.provider.close()
             except Exception:
                 pass
 

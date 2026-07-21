@@ -3,9 +3,18 @@ from __future__ import annotations
 import unittest
 
 from wrc_park_vision.runtime.config import ReviewSettings
+from wrc_park_vision.runtime.detection_summary import build_detection_summary
 from wrc_park_vision.runtime.fusion import merge_and_mark_conflicts
 from wrc_park_vision.runtime.review import ReviewCoordinator, ReviewPolicy, ReviewProvider
-from wrc_park_vision.runtime.schemas import ModuleSummary, Observation, ValidatedImage
+from wrc_park_vision.runtime.schemas import (
+    DetectionSummary,
+    ModuleSummary,
+    Observation,
+    VLMFinding,
+    VLMReviewDecision,
+    VLMReviewResult,
+    ValidatedImage,
+)
 
 from .helpers import make_observation
 
@@ -37,9 +46,16 @@ class ReviewTests(unittest.TestCase):
             def __init__(self) -> None:
                 self.calls = 0
 
-            def review(self, image: ValidatedImage, observations: list[Observation]) -> list[Observation]:
+            def review(self, image: ValidatedImage, summary: DetectionSummary) -> VLMReviewResult:
                 self.calls += 1
-                return observations
+                return VLMReviewResult(
+                    provider="fake",
+                    model_id="fake-vl",
+                    duration_ms=1,
+                    decisions=[
+                        VLMReviewDecision(observation_id="obs-0001", verdict="confirmed"),
+                    ],
+                )
 
         provider = FakeReviewProvider()
         coordinator = ReviewCoordinator(ReviewSettings(low_confidence_threshold=0.5), provider)
@@ -47,11 +63,56 @@ class ReviewTests(unittest.TestCase):
         modules = [ModuleSummary(module_id="garbage", task_group="garbage", status="success", duration_ms=1)]
         image = ValidatedImage("image.jpg", object(), 100, 80)
 
-        reviewed, summary = coordinator.apply(image, [observation], modules)
+        prepared = merge_and_mark_conflicts([observation], 0.75)
+        reviewed, summary = coordinator.apply(
+            image,
+            prepared,
+            modules,
+            build_detection_summary(prepared, ReviewSettings(low_confidence_threshold=0.5)),
+        )
 
         self.assertEqual(provider.calls, 1)
-        self.assertTrue(summary.required)
-        self.assertEqual(reviewed[0].review.status, "pending")
+        self.assertEqual(reviewed[0].review.status, "confirmed")
+        self.assertTrue(summary.attempted)
+
+    def test_provider_reviews_full_image_even_without_detections(self) -> None:
+        class FakeReviewProvider(ReviewProvider):
+            def __init__(self) -> None:
+                self.image = None
+                self.calls = 0
+
+            def review(self, image: ValidatedImage, summary: DetectionSummary) -> VLMReviewResult:
+                self.image = image
+                self.calls += 1
+                return VLMReviewResult(
+                    provider="fake",
+                    model_id="fake-vl",
+                    duration_ms=1,
+                    findings=[
+                        VLMFinding(
+                            id="vlm-0001",
+                            task_group="garbage",
+                            class_name="box",
+                            reasoning="YOLO missed it",
+                        )
+                    ],
+                )
+
+        provider = FakeReviewProvider()
+        coordinator = ReviewCoordinator(ReviewSettings(), provider)
+        image = ValidatedImage("image.jpg", object(), 100, 80)
+        reviewed, summary = coordinator.apply(
+            image,
+            [],
+            [ModuleSummary(module_id="garbage", task_group="garbage", status="success", duration_ms=1)],
+            DetectionSummary(total_detections=0),
+        )
+
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(reviewed, [])
+        self.assertIs(provider.image, image)
+        self.assertTrue(summary.attempted)
+        self.assertEqual(summary.findings[0].geometry, None)
 
 
 if __name__ == "__main__":
