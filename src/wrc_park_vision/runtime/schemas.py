@@ -13,6 +13,10 @@ Float4 = tuple[float, float, float, float]
 PipelineStatus = Literal["success", "partial_success", "failure"]
 ModuleStatus = Literal["success", "failure"]
 ReviewStatus = Literal["not_required", "pending", "confirmed", "rejected"]
+ReviewExecutionStatus = Literal["not_required", "pending", "completed", "failed"]
+ReviewVerdict = Literal["confirmed", "rejected", "corrected", "uncertain"]
+FusionStatus = Literal["not_run", "completed", "fallback"]
+FusionAction = Literal["keep_yolo", "reject_yolo", "correct_yolo", "add_vlm_finding"]
 
 
 class BBoxGeometry(BaseModel):
@@ -137,6 +141,68 @@ class Observation(BaseModel):
         return self
 
 
+class DetectionSummaryItem(BaseModel):
+    observation_id: str
+    task_group: str
+    class_id: Optional[int] = None
+    class_name: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    bbox_xyxy: Float4
+    bbox_normalized_xyxy: Float4
+    conflict_observation_ids: list[str] = Field(default_factory=list)
+    review_reasons: list[str] = Field(default_factory=list)
+
+
+class DetectionSummary(BaseModel):
+    total_detections: int = Field(ge=0)
+    counts_by_task_group: dict[str, int] = Field(default_factory=dict)
+    detections: list[DetectionSummaryItem] = Field(default_factory=list)
+
+
+class VLMReviewDecision(BaseModel):
+    observation_id: str
+    verdict: ReviewVerdict
+    corrected_task_group: Optional[str] = None
+    corrected_class_name: Optional[str] = None
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    reasoning: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_correction(self) -> "VLMReviewDecision":
+        has_correction = self.corrected_task_group is not None or self.corrected_class_name is not None
+        if self.verdict == "corrected":
+            if self.corrected_task_group is None or self.corrected_class_name is None:
+                raise ValueError("corrected verdict requires corrected_task_group and corrected_class_name")
+        elif has_correction:
+            raise ValueError("corrected fields are only allowed for corrected verdict")
+        return self
+
+
+class VLMFinding(BaseModel):
+    id: str
+    task_group: str
+    class_name: str
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    reasoning: Optional[str] = None
+    geometry: None = None
+
+
+class FusionDecision(BaseModel):
+    id: str
+    action: FusionAction
+    observation_id: Optional[str] = None
+    finding_id: Optional[str] = None
+    final_task_group: Optional[str] = None
+    final_class_name: Optional[str] = None
+    geometry_source: Literal["yolo", "none"]
+    reasoning: Optional[str] = None
+
+
+class FusionSummary(BaseModel):
+    status: FusionStatus = "not_run"
+    decisions: list[FusionDecision] = Field(default_factory=list)
+
+
 class RequestContext(BaseModel):
     camera_id: Optional[str] = None
     timestamp: Optional[datetime] = None
@@ -162,10 +228,17 @@ class ModuleSummary(BaseModel):
 class ReviewSummary(BaseModel):
     required: bool = False
     reasons: list[str] = Field(default_factory=list)
+    attempted: bool = False
+    status: ReviewExecutionStatus = "not_required"
+    provider: Optional[str] = None
+    model_id: Optional[str] = None
+    duration_ms: Optional[float] = Field(default=None, ge=0.0)
+    decisions: list[VLMReviewDecision] = Field(default_factory=list)
+    findings: list[VLMFinding] = Field(default_factory=list)
 
 
 class RuntimeErrorInfo(BaseModel):
-    stage: Literal["input", "module", "fusion", "review", "output"]
+    stage: Literal["input", "module", "detection_summary", "fusion", "review", "output"]
     code: str
     message: str
     module_id: Optional[str] = None
@@ -173,6 +246,9 @@ class RuntimeErrorInfo(BaseModel):
 
 class TimingInfo(BaseModel):
     total: float = Field(ge=0.0)
+    detection_summary: Optional[float] = Field(default=None, ge=0.0)
+    review: Optional[float] = Field(default=None, ge=0.0)
+    fusion: Optional[float] = Field(default=None, ge=0.0)
 
 
 class PipelineResponse(BaseModel):
@@ -182,7 +258,9 @@ class PipelineResponse(BaseModel):
     input: InputInfo
     modules: list[ModuleSummary] = Field(default_factory=list)
     observations: list[Observation] = Field(default_factory=list)
+    detection_summary: Optional[DetectionSummary] = None
     review: ReviewSummary = Field(default_factory=ReviewSummary)
+    fusion: FusionSummary = Field(default_factory=FusionSummary)
     errors: list[RuntimeErrorInfo] = Field(default_factory=list)
     timing_ms: TimingInfo
 

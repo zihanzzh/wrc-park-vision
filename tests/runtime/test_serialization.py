@@ -29,6 +29,8 @@ class SerializationTests(unittest.TestCase):
             write_json(response, output_path)
             data = json.loads(output_path.read_text(encoding="utf-8"))
         self.assertEqual(data["schema_version"], "1.0")
+        self.assertIsNone(data["detection_summary"])
+        self.assertEqual(data["fusion"], {"status": "not_run", "decisions": []})
         self.assertEqual(data["observations"][0]["geometry"]["bbox_xyxy"], [10.0, 8.0, 40.0, 60.0])
         self.assertEqual(data["observations"][0]["geometry"]["bbox_normalized_xyxy"], [0.1, 0.1, 0.4, 0.75])
         self.assertIsNone(data["observations"][0]["track_id"])

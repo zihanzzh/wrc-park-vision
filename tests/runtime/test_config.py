@@ -141,6 +141,30 @@ modules:
             config = load_runtime_config(config_path, validate_model_paths=False)
         self.assertIsNone(config.modules[0].expected_class_names)
 
+    def test_enabled_review_provider_requires_endpoint_and_model(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "runtime.yaml"
+            config_path.write_text(
+                """
+modules:
+  - id: active
+    enabled: true
+    type: detection
+    task_group: garbage
+    backend: ultralytics
+    model_path: model.pt
+    model_id: active_model
+    expected_class_names: [bottle]
+review:
+  provider:
+    enabled: true
+    type: qwen2_5_vl
+""",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "endpoint and model_id"):
+                load_runtime_config(config_path, validate_model_paths=False)
+
 
 if __name__ == "__main__":
     unittest.main()

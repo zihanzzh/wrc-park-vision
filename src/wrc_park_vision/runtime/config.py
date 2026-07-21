@@ -57,6 +57,24 @@ class ReviewSettings(BaseModel):
     cross_model_iou_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
     review_cross_task_overlap: bool = True
     review_module_failure: bool = True
+    provider: "ReviewProviderSettings" = Field(default_factory=lambda: ReviewProviderSettings())
+
+
+class ReviewProviderSettings(BaseModel):
+    enabled: bool = False
+    type: Literal["qwen2_5_vl"] = "qwen2_5_vl"
+    endpoint: Optional[str] = None
+    model_id: Optional[str] = None
+    api_key_env: Optional[str] = None
+    timeout_seconds: float = Field(default=8.0, gt=0.0)
+    max_tokens: int = Field(default=1200, gt=0)
+    temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+
+    @model_validator(mode="after")
+    def validate_enabled_provider(self) -> "ReviewProviderSettings":
+        if self.enabled and (not self.endpoint or not self.model_id):
+            raise ValueError("enabled review provider requires endpoint and model_id")
+        return self
 
 
 class PreviewSettings(BaseModel):

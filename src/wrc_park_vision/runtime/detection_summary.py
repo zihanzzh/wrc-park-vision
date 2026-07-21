@@ -1,0 +1,46 @@
+"""Build deterministic semantic context from normalized YOLO observations."""
+
+from __future__ import annotations
+
+from collections import Counter
+
+from .config import ReviewSettings
+from .schemas import BBoxGeometry, DetectionSummary, DetectionSummaryItem, Observation
+
+
+def observation_review_reasons(observation: Observation, settings: ReviewSettings) -> list[str]:
+    reasons: list[str] = []
+    if observation.confidence < settings.low_confidence_threshold:
+        reasons.append("low_confidence")
+    if settings.review_cross_task_overlap and observation.conflicts:
+        reasons.append("cross_model_overlap")
+    return reasons
+
+
+def build_detection_summary(
+    observations: list[Observation],
+    settings: ReviewSettings,
+) -> DetectionSummary:
+    items: list[DetectionSummaryItem] = []
+    counts = Counter(observation.task_group for observation in observations)
+    for observation in observations:
+        if not isinstance(observation.geometry, BBoxGeometry):
+            continue
+        items.append(
+            DetectionSummaryItem(
+                observation_id=observation.id,
+                task_group=observation.task_group,
+                class_id=observation.class_id,
+                class_name=observation.class_name,
+                confidence=observation.confidence,
+                bbox_xyxy=observation.geometry.bbox_xyxy,
+                bbox_normalized_xyxy=observation.geometry.bbox_normalized_xyxy,
+                conflict_observation_ids=[conflict.observation_id for conflict in observation.conflicts],
+                review_reasons=observation_review_reasons(observation, settings),
+            )
+        )
+    return DetectionSummary(
+        total_detections=len(items),
+        counts_by_task_group=dict(sorted(counts.items())),
+        detections=items,
+    )
