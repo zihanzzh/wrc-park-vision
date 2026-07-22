@@ -141,6 +141,113 @@ modules:
             config = load_runtime_config(config_path, validate_model_paths=False)
         self.assertIsNone(config.modules[0].expected_class_names)
 
+    def test_yolo_world_requires_grouped_open_vocabulary_classes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "runtime.yaml"
+            config_path.write_text(
+                """
+modules:
+  - id: world
+    enabled: true
+    type: detection
+    task_group: object_detection
+    backend: yolo_world
+    model_path: world.pt
+    model_id: world_model
+    expected_class_names: [spray_can, plastic_drink_bottle]
+""",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "open_vocabulary_classes instead"):
+                load_runtime_config(config_path, validate_model_paths=False)
+
+    def test_yolo_world_validates_group_local_class_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "runtime.yaml"
+            config_path.write_text(
+                """
+modules:
+  - id: world
+    enabled: true
+    type: detection
+    task_group: object_detection
+    backend: yolo_world
+    model_path: world.pt
+    model_id: world_model
+    open_vocabulary_classes:
+      - task_group: prohibited_items
+        class_id: 1
+        class_name: spray_can
+        prompts: [spray can]
+""",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "continuous from 0"):
+                load_runtime_config(config_path, validate_model_paths=False)
+
+    def test_yolo_world_rejects_behavior_actions_as_object_classes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "runtime.yaml"
+            config_path.write_text(
+                """
+modules:
+  - id: world
+    enabled: true
+    type: detection
+    task_group: object_detection
+    backend: yolo_world
+    model_path: world.pt
+    model_id: world_model
+    open_vocabulary_classes:
+      - task_group: uncivilized_behavior
+        class_id: 0
+        class_name: smoking
+        prompts: [smoking]
+""",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "Behavior Pipeline"):
+                load_runtime_config(config_path, validate_model_paths=False)
+
+    def test_yolo_world_accepts_objects_from_multiple_task_groups(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "runtime.yaml"
+            config_path.write_text(
+                """
+modules:
+  - id: world
+    enabled: true
+    type: detection
+    task_group: object_detection
+    backend: yolo_world
+    model_path: world.pt
+    model_id: world_model
+    open_vocabulary_classes:
+      - task_group: prohibited_items
+        class_id: 0
+        class_name: spray_can
+        prompts: [spray can, aerosol can]
+      - task_group: garbage
+        class_id: 0
+        class_name: plastic_drink_bottle
+        prompts: [plastic drink bottle]
+      - task_group: uncivilized_behavior
+        class_id: 0
+        class_name: person
+        prompts: [person]
+""",
+                encoding="utf-8",
+            )
+            config = load_runtime_config(config_path, validate_model_paths=False)
+
+        classes = config.modules[0].open_vocabulary_classes
+        self.assertIsNotNone(classes)
+        self.assertEqual([item.task_group for item in classes or []], [
+            "prohibited_items",
+            "garbage",
+            "uncivilized_behavior",
+        ])
+
     def test_enabled_review_provider_requires_endpoint_and_model(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "runtime.yaml"

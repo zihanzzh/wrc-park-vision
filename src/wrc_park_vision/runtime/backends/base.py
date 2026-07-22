@@ -16,6 +16,7 @@ class BackendDetection:
     confidence: float
     bbox_xyxy: tuple[float, float, float, float]
     metadata: dict[str, Any] = field(default_factory=dict)
+    task_group: str | None = None
 
 
 @dataclass(frozen=True)
@@ -38,4 +39,3 @@ class InferenceBackend(ABC):
 
     def close(self) -> None:
         """Release backend resources when supported."""
-

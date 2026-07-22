@@ -9,7 +9,12 @@ from typing import Optional
 
 from PIL import Image, UnidentifiedImageError
 
-from .backends import TensorRTBackend, UltralyticsBackend
+from .backends import (
+    TensorRTBackend,
+    UltralyticsBackend,
+    YOLOWorldBackend,
+    YOLOWorldClassDefinition,
+)
 from .config import ModuleSettings, RuntimeConfig
 from .detection_summary import build_detection_summary
 from .fusion import fuse_review_results, merge_and_mark_conflicts, prepare_observations
@@ -47,14 +52,37 @@ def validate_image(image_path: Path) -> ValidatedImage:
 
 
 def _build_detection_module(settings: ModuleSettings) -> DetectionModule:
-    if settings.model_path is None or not settings.expected_class_names:
-        raise ValueError(f"detection module {settings.id} requires model_path and expected_class_names")
+    if settings.model_path is None:
+        raise ValueError(f"detection module {settings.id} requires model_path")
     if settings.backend == "ultralytics":
+        if not settings.expected_class_names:
+            raise ValueError(f"detection module {settings.id} requires expected_class_names")
         backend = UltralyticsBackend(
             model_path=settings.model_path,
             module_id=settings.id,
             model_id=settings.model_id,
             expected_class_names=settings.expected_class_names,
+            device=settings.device,
+            confidence=settings.confidence,
+            iou=settings.iou,
+            imgsz=settings.imgsz,
+        )
+    elif settings.backend == "yolo_world":
+        if not settings.open_vocabulary_classes:
+            raise ValueError(f"YOLO-World module {settings.id} requires open_vocabulary_classes")
+        backend = YOLOWorldBackend(
+            model_path=settings.model_path,
+            module_id=settings.id,
+            model_id=settings.model_id,
+            classes=[
+                YOLOWorldClassDefinition(
+                    task_group=item.task_group,
+                    class_id=item.class_id,
+                    class_name=item.class_name,
+                    prompts=tuple(item.prompts),
+                )
+                for item in settings.open_vocabulary_classes
+            ],
             device=settings.device,
             confidence=settings.confidence,
             iou=settings.iou,
@@ -91,12 +119,22 @@ def build_modules(config: RuntimeConfig) -> list[TaskModule]:
 def build_class_catalog(config: RuntimeConfig) -> dict[str, list[str]]:
     catalog: dict[str, list[str]] = {}
     for settings in config.modules:
-        if not settings.enabled or not settings.expected_class_names:
+        if not settings.enabled:
             continue
-        names = catalog.setdefault(settings.task_group, [])
-        for class_name in settings.expected_class_names:
-            if class_name not in names:
-                names.append(class_name)
+        if settings.backend == "yolo_world" and settings.open_vocabulary_classes:
+            grouped: dict[str, list[tuple[int, str]]] = {}
+            for item in settings.open_vocabulary_classes:
+                grouped.setdefault(item.task_group, []).append((item.class_id, item.class_name))
+            for task_group, entries in grouped.items():
+                names = catalog.setdefault(task_group, [])
+                for _, class_name in sorted(entries):
+                    if class_name not in names:
+                        names.append(class_name)
+        elif settings.expected_class_names:
+            names = catalog.setdefault(settings.task_group, [])
+            for class_name in settings.expected_class_names:
+                if class_name not in names:
+                    names.append(class_name)
     return catalog
 
 

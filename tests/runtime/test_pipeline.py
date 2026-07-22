@@ -7,7 +7,8 @@ from unittest.mock import patch
 
 from wrc_park_vision.runtime.backends.base import BackendDetection
 from wrc_park_vision.runtime.modules.detection import DetectionModule
-from wrc_park_vision.runtime.pipeline import RuntimePipeline
+from wrc_park_vision.runtime.config import RuntimeConfig
+from wrc_park_vision.runtime.pipeline import RuntimePipeline, build_class_catalog, build_modules
 from wrc_park_vision.runtime.review import ReviewProvider
 from wrc_park_vision.runtime.schemas import (
     DetectionSummary,
@@ -61,6 +62,111 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(len(response.observations), 1)
         self.assertIn("module_failure", response.review.reasons)
         self.assertEqual(len(response.errors), 1)
+
+    def test_detection_level_task_groups_flow_through_summary_and_review(self) -> None:
+        class CapturingReviewProvider(ReviewProvider):
+            def review(self, image: ValidatedImage, summary: DetectionSummary) -> VLMReviewResult:
+                self.summary = summary
+                return VLMReviewResult(
+                    provider="fake_vlm",
+                    model_id="fake-vl",
+                    duration_ms=1,
+                    decisions=[
+                        VLMReviewDecision(observation_id=item.observation_id, verdict="confirmed")
+                        for item in summary.detections
+                    ],
+                )
+
+        provider = CapturingReviewProvider()
+        backend = FakeBackend(
+            "world",
+            [
+                BackendDetection(
+                    0,
+                    "spray_can",
+                    0.9,
+                    (10, 10, 30, 40),
+                    task_group="prohibited_items",
+                ),
+                BackendDetection(
+                    3,
+                    "plastic_drink_bottle",
+                    0.8,
+                    (50, 10, 70, 50),
+                    task_group="garbage",
+                ),
+            ],
+        )
+        module = DetectionModule("world", "object_detection", "world", backend)
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = write_test_image(Path(directory) / "image.jpg")
+            response = RuntimePipeline(
+                make_config(("world",)),
+                [module],
+                review_provider=provider,
+            ).process(image_path)
+
+        self.assertEqual(
+            [observation.task_group for observation in response.observations],
+            ["garbage", "prohibited_items"],
+        )
+        self.assertEqual(
+            provider.summary.counts_by_task_group,
+            {"garbage": 1, "prohibited_items": 1},
+        )
+        self.assertEqual(response.review.status, "completed")
+
+    def test_yolo_world_module_factory_and_class_catalog_use_grouped_classes(self) -> None:
+        config = RuntimeConfig.model_validate(
+            {
+                "modules": [
+                    {
+                        "id": "world",
+                        "enabled": True,
+                        "type": "detection",
+                        "task_group": "object_detection",
+                        "backend": "yolo_world",
+                        "model_path": Path("world.pt"),
+                        "model_id": "world_model",
+                        "open_vocabulary_classes": [
+                            {
+                                "task_group": "prohibited_items",
+                                "class_id": 0,
+                                "class_name": "spray_can",
+                                "prompts": ["spray can"],
+                            },
+                            {
+                                "task_group": "garbage",
+                                "class_id": 0,
+                                "class_name": "plastic_drink_bottle",
+                                "prompts": ["plastic drink bottle"],
+                            },
+                        ],
+                    }
+                ]
+            }
+        )
+
+        with patch("wrc_park_vision.runtime.pipeline.YOLOWorldBackend") as backend_class:
+            modules = build_modules(config)
+
+        self.assertEqual(len(modules), 1)
+        backend_class.assert_called_once()
+        definitions = backend_class.call_args.kwargs["classes"]
+        self.assertEqual(
+            [(item.task_group, item.class_id, item.class_name) for item in definitions],
+            [
+                ("prohibited_items", 0, "spray_can"),
+                ("garbage", 0, "plastic_drink_bottle"),
+            ],
+        )
+        self.assertEqual(
+            build_class_catalog(config),
+            {
+                "prohibited_items": ["spray_can"],
+                "garbage": ["plastic_drink_bottle"],
+            },
+        )
 
     def test_all_modules_failure(self) -> None:
         modules = [

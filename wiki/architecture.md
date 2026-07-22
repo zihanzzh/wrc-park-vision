@@ -22,6 +22,7 @@ Robot sends one image
 
 - 当前不是一个统一 YOLO 模型。
 - 禁带品和垃圾分别训练独立 YOLO11m；不文明行为使用后续独立模型或视觉方案。
+- YOLO-World 作为可选 object detector backend 接入，不替换现有 YOLO11m；它可以按配置检测多个任务组的基础物体。
 - 多个独立模型共享同一个 Runtime Pipeline。
 - 机器人只发送图片，不提供 `taskId`、`taskType`、`mode` 或 `category`。
 - Pipeline 根据模型来源写入 `task_group`，不依赖机器人提供任务类型。
@@ -39,7 +40,7 @@ Robot sends one image
 
 ```text
 image path
-  -> 配置、模型路径与 expected_class_names 启动校验
+  -> 配置、模型路径与 backend 类别映射启动校验
   -> 图片解码、尺寸校验和 request_id
   -> sequential 运行全部 enabled task modules
   -> 单模块异常隔离
@@ -58,7 +59,9 @@ image path
 
 - 当前通过配置注册 `prohibited_items` 和 `garbage` 两个通用 `DetectionModule`，主 Pipeline 不写死模块数量或业务类别。
 - Ultralytics backend 在 Pipeline 初始化时加载一次模型，并立即把 Ultralytics result 转成内部普通对象。
-- enabled detection module 必须配置有序 `expected_class_names`。权重加载后严格比较 class ID 连续性、类别数量、名称和顺序，校验发生在任何图片处理之前。
+- 固定类别 Ultralytics module 必须配置有序 `expected_class_names`。权重加载后严格比较 class ID 连续性、类别数量、名称和顺序，校验发生在任何图片处理之前。
+- YOLO-World module 使用分组的 `open_vocabulary_classes`，显式配置每个类别的 `task_group`、组内 `class_id`、canonical `class_name` 和 prompts；模型加载后只调用一次 `set_classes()`。
+- YOLO-World backend 将 prompt 级检测映射成 canonical 类别，并在 backend 输出中携带 `task_group`；`DetectionModule` 优先使用该值构造统一 `Observation`。
 - `bbox_xyxy` 是 canonical 像素坐标；`bbox_normalized_xyxy` 从同一个 geometry 计算。
 - Review 或 Final Fusion 失败时保留已有 YOLO observations；只要至少一个模块成功，后处理失败返回 `partial_success`。
 - `Observation.track_id` 已作为可空字段预留，`RequestContext` 支持 ISO 8601 timestamp 和非负 frame index；当前没有实现 Tracking 或多帧融合。
@@ -129,6 +132,18 @@ Runtime 预留独立 behavior module 接口，并补充 `task_group: uncivilized
 
 不能预设五类不文明行为都能作为普通 object detection 类别直接解决。
 
+### 4.1 YOLO-World Object Backend
+
+YOLO-World 是现有 detector 集合中的可选 backend，不替代两个已训练 YOLO11m。它只负责 object-level detection，可在同一个模型实例中覆盖：
+
+- `prohibited_items`：正式 8 类禁带品。
+- `garbage`：正式 6 类垃圾。
+- `uncivilized_behavior`：`person`、`bench`、`grass`、`cigarette`、`vehicle` 等行为判断需要的基础物体。
+
+`trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_on_bench`、`lying_on_bench` 等行为不得作为 YOLO-World class。这些语义需要由后续 Behavior Pipeline 结合基础对象、区域、姿态、关系、tracking 和 VLM 判断。
+
+开放词汇配置可以为一个 canonical 类别提供有限同义 prompts。backend 输出会把命中的 prompt 规范化为组内 class ID 和 canonical class name；Qwen Review 继续只接收统一 Detection Summary，不感知 backend 差异。
+
 ### 5. 多模型调度
 
 同一图片当前顺序运行 prohibited detector 和 garbage detector。模块由配置列表注册，后续 behavior module 可按相同接口加入，不需要改写主 Pipeline。
@@ -157,11 +172,12 @@ Runtime 预留独立 behavior module 接口，并补充 `task_group: uncivilized
 - `review.status`
 - `metadata`
 
-`taskGroup` 来源映射：
+`task_group` 来源映射：
 
 - prohibited_items model -> `prohibited_items`
 - garbage model -> `garbage`
 - behavior model / pipeline -> `uncivilized_behavior`
+- YOLO-World -> 按 `open_vocabulary_classes` 中每个 canonical 类别的显式映射确定，可由同一 backend 输出多个 task group
 
 不要求不同模型共享同一全局 class id，也不修改原数据集标签。
 
@@ -285,6 +301,7 @@ TensorRT engine 应在 Thor 实际环境中构建或验证，避免脱离目标 
 - 已完成：两个独立 YOLO11m 在外部训练机完成训练，权重尚待交付当前 Mac。
 - 已完成：共享多模型 Runtime detector 链路，并在 macOS 与 Thor 跑通两个真实模型。
 - 已完成：Detection Summary、Qwen2.5-VL provider interface、全图 Prompt Builder、严格 Response Parser、Final Fusion 和更新后的 Preview。
+- 已完成：可选 YOLO-World object detector backend、分组开放词汇配置、prompt 到 canonical 类别映射和 mock 自动测试；尚未完成真实权重 Runtime smoke test。
 - 下一步：连接真实 Qwen2.5-VL endpoint，检查 JSON / Preview 与人工判断的一致性。
 - 下一步：评估两个模型的误报、漏报、冲突和各类表现。
 - 下一步：在 Thor 构建多个 TensorRT engine，并 benchmark 串行/并行策略。

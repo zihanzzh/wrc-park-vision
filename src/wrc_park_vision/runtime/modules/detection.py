@@ -22,13 +22,14 @@ class DetectionModule(TaskModule):
         observations: list[Observation] = []
         for detection in prediction.detections:
             geometry = BBoxGeometry.from_xyxy(detection.bbox_xyxy, image.width, image.height)
+            task_group = detection.task_group or self.task_group
             metadata = dict(detection.metadata)
             if prediction.timing_ms:
                 metadata["backend_timing_ms"] = prediction.timing_ms
             observations.append(
                 Observation(
                     kind="detection",
-                    task_group=self.task_group,
+                    task_group=task_group,
                     class_id=detection.class_id,
                     class_name=detection.class_name,
                     confidence=detection.confidence,
@@ -45,4 +46,3 @@ class DetectionModule(TaskModule):
 
     def close(self) -> None:
         self.backend.close()
-

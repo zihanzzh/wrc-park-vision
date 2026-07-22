@@ -1,0 +1,118 @@
+runtime:
+  execution: sequential
+  output_dir: runtime_outputs/yolo_world
+
+modules:
+  - id: yolo_world_objects
+    enabled: true
+    type: detection
+    task_group: object_detection
+    backend: yolo_world
+    model_path: ${WRC_YOLO_WORLD_MODEL_PATH}
+    model_id: yolov8s-worldv2
+    open_vocabulary_classes:
+      - task_group: prohibited_items
+        class_id: 0
+        class_name: spray_can
+        prompts: [spray can, aerosol can]
+      - task_group: prohibited_items
+        class_id: 1
+        class_name: portable_gas_stove
+        prompts: [portable gas stove, butane stove, camping stove]
+      - task_group: prohibited_items
+        class_id: 2
+        class_name: megaphone
+        prompts: [megaphone]
+      - task_group: prohibited_items
+        class_id: 3
+        class_name: skateboard
+        prompts: [skateboard]
+      - task_group: prohibited_items
+        class_id: 4
+        class_name: kick_scooter
+        prompts: [children's scooter, kids scooter, kick scooter]
+      - task_group: prohibited_items
+        class_id: 5
+        class_name: speaker
+        prompts: [speaker, portable speaker, bluetooth speaker]
+      - task_group: prohibited_items
+        class_id: 6
+        class_name: roller_skates
+        prompts: [roller skates]
+      - task_group: prohibited_items
+        class_id: 7
+        class_name: barbecue_grill
+        prompts: [barbecue grill, charcoal grill]
+
+      - task_group: garbage
+        class_id: 0
+        class_name: crumpled_paper_ball
+        prompts: [crumpled paper ball, paper ball]
+      - task_group: garbage
+        class_id: 1
+        class_name: disposable_food_container
+        prompts: [disposable food container, takeout food container]
+      - task_group: garbage
+        class_id: 2
+        class_name: empty_cigarette_box
+        prompts: [empty cigarette box, cigarette pack]
+      - task_group: garbage
+        class_id: 3
+        class_name: plastic_drink_bottle
+        prompts: [plastic drink bottle]
+      - task_group: garbage
+        class_id: 4
+        class_name: plastic_food_wrapper
+        prompts: [plastic food wrapper]
+      - task_group: garbage
+        class_id: 5
+        class_name: rigid_takeout_bag
+        prompts: [rigid takeout bag, takeout bag]
+
+      - task_group: uncivilized_behavior
+        class_id: 0
+        class_name: person
+        prompts: [person]
+      - task_group: uncivilized_behavior
+        class_id: 1
+        class_name: bench
+        prompts: [bench, park bench]
+      - task_group: uncivilized_behavior
+        class_id: 2
+        class_name: grass
+        prompts: [grass, lawn]
+      - task_group: uncivilized_behavior
+        class_id: 3
+        class_name: cigarette
+        prompts: [cigarette]
+      - task_group: uncivilized_behavior
+        class_id: 4
+        class_name: vehicle
+        prompts: [vehicle, car]
+    device: auto
+    confidence: 0.10
+    iou: 0.70
+    imgsz: 640
+
+review:
+  low_confidence_threshold: 0.45
+  cross_model_iou_threshold: 0.75
+  review_cross_task_overlap: true
+  review_module_failure: true
+  provider:
+    enabled: false
+    type: qwen2_5_vl
+    endpoint: null
+    model_id: null
+    api_key_env: WRC_VLM_API_KEY
+    timeout_seconds: 10
+    max_tokens: 1200
+    temperature: 0
+
+preview:
+  enabled: true
+  task_group_colors:
+    prohibited_items: "#dc2626"
+    garbage: "#16a34a"
+    uncivilized_behavior: "#2563eb"
+    unknown: "#d97706"

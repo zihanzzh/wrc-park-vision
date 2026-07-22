@@ -3,6 +3,7 @@
 from .base import BackendDetection, BackendPrediction, InferenceBackend
 from .tensorrt import TensorRTBackend
 from .ultralytics import UltralyticsBackend
+from .yolo_world import YOLOWorldBackend, YOLOWorldClassDefinition
 
 __all__ = [
     "BackendDetection",
@@ -10,5 +11,6 @@ __all__ = [
     "InferenceBackend",
     "TensorRTBackend",
     "UltralyticsBackend",
+    "YOLOWorldBackend",
+    "YOLOWorldClassDefinition",
 ]
-

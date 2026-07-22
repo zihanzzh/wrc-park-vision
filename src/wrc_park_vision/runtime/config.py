@@ -12,6 +12,13 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 ENV_PATTERN = re.compile(r"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)\}|(?P<plain>[A-Za-z_][A-Za-z0-9_]*))")
+BEHAVIOR_ACTION_CLASS_NAMES = {
+    "trampling_grass",
+    "smoking",
+    "blocking_fire_lane",
+    "standing_on_bench",
+    "lying_on_bench",
+}
 
 
 class ConfigError(ValueError):
@@ -23,15 +30,41 @@ class RuntimeSettings(BaseModel):
     output_dir: Path = Path("runtime_outputs")
 
 
+class OpenVocabularyClassSettings(BaseModel):
+    task_group: str = Field(min_length=1)
+    class_id: int = Field(ge=0)
+    class_name: str = Field(min_length=1)
+    prompts: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_prompts(self) -> "OpenVocabularyClassSettings":
+        if not self.task_group.strip() or not self.class_name.strip():
+            raise ValueError("open-vocabulary task_group and class_name must not be blank")
+        if any(not prompt.strip() for prompt in self.prompts):
+            raise ValueError(f"open-vocabulary class {self.class_name} contains a blank prompt")
+        if len(self.prompts) != len(set(self.prompts)):
+            raise ValueError(f"open-vocabulary class {self.class_name} contains duplicate prompts")
+        if (
+            self.task_group == "uncivilized_behavior"
+            and self.class_name in BEHAVIOR_ACTION_CLASS_NAMES
+        ):
+            raise ValueError(
+                f"behavior action {self.class_name} must be handled by the Behavior Pipeline, "
+                "not configured as a YOLO-World object class"
+            )
+        return self
+
+
 class ModuleSettings(BaseModel):
     id: str = Field(min_length=1)
     enabled: bool = True
     type: Literal["detection", "behavior"]
     task_group: str = Field(min_length=1)
-    backend: Literal["ultralytics", "tensorrt"]
+    backend: Literal["ultralytics", "tensorrt", "yolo_world"]
     model_path: Optional[Path] = None
     model_id: str = Field(min_length=1)
     expected_class_names: Optional[list[str]] = None
+    open_vocabulary_classes: Optional[list[OpenVocabularyClassSettings]] = None
     device: str = "auto"
     confidence: float = Field(default=0.25, ge=0.0, le=1.0)
     iou: float = Field(default=0.7, ge=0.0, le=1.0)
@@ -47,8 +80,45 @@ class ModuleSettings(BaseModel):
                 raise ValueError(f"module {self.id} expected_class_names must not contain blank names")
             if len(names) != len(set(names)):
                 raise ValueError(f"module {self.id} expected_class_names must not contain duplicates")
-        if self.enabled and self.type == "detection" and not names:
-            raise ValueError(f"enabled detection module {self.id} requires non-empty expected_class_names")
+        open_classes = self.open_vocabulary_classes
+        if self.backend == "yolo_world":
+            if names is not None:
+                raise ValueError(
+                    f"YOLO-World module {self.id} must use open_vocabulary_classes instead of expected_class_names"
+                )
+            if self.enabled and self.type == "detection" and not open_classes:
+                raise ValueError(
+                    f"enabled YOLO-World module {self.id} requires non-empty open_vocabulary_classes"
+                )
+        else:
+            if open_classes is not None:
+                raise ValueError(
+                    f"module {self.id} may only use open_vocabulary_classes with backend yolo_world"
+                )
+            if self.enabled and self.type == "detection" and not names:
+                raise ValueError(f"enabled detection module {self.id} requires non-empty expected_class_names")
+
+        if open_classes:
+            pairs = [(item.task_group, item.class_name) for item in open_classes]
+            if len(pairs) != len(set(pairs)):
+                raise ValueError(f"YOLO-World module {self.id} contains duplicate task_group/class_name pairs")
+            prompts = [prompt for item in open_classes for prompt in item.prompts]
+            if len(prompts) != len(set(prompts)):
+                raise ValueError(f"YOLO-World module {self.id} contains prompts assigned to multiple classes")
+            task_groups = {item.task_group for item in open_classes}
+            for task_group in task_groups:
+                group_items = [item for item in open_classes if item.task_group == task_group]
+                class_ids = sorted(item.class_id for item in group_items)
+                if class_ids != list(range(len(group_items))):
+                    raise ValueError(
+                        f"YOLO-World module {self.id} class IDs for {task_group} "
+                        f"must be continuous from 0: actual_ids={class_ids}"
+                    )
+                class_names = [item.class_name for item in group_items]
+                if len(class_names) != len(set(class_names)):
+                    raise ValueError(
+                        f"YOLO-World module {self.id} contains duplicate class names for {task_group}"
+                    )
         return self
 
 

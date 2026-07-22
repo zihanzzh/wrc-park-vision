@@ -50,10 +50,10 @@
 - 决策：机器人不发送 `taskId`、`taskType`、`mode` 或 `category`。
 - 说明：Pipeline 根据模型来源写入 `task_group`。
 
-### D009：Task Group 由模型来源确定
+### D009：Task Group 由 detector 配置映射确定
 
-- 日期：2026-07-18
-- 决策：prohibited model -> `prohibited_items`；garbage model -> `garbage`；behavior module -> `uncivilized_behavior`。
+- 日期：2026-07-18，2026-07-21 更新
+- 决策：固定类别 detector 按模块来源映射 task group：prohibited model -> `prohibited_items`；garbage model -> `garbage`；behavior module -> `uncivilized_behavior`。允许多任务开放词汇 backend 为每个 canonical 类别显式配置 `task_group`。
 - 说明：不同模型保留各自 class id，不创建统一全局 class id，也不修改最终 labels。
 
 ### D010：VLM 使用可配置启用方式
@@ -135,9 +135,9 @@
 
 ### D023：权重类别映射必须在启动时严格校验
 
-- 日期：2026-07-19
-- 决策：每个 enabled detection module 必须提供有序 `expected_class_names`；Ultralytics 权重加载后校验 class ID 从 0 连续、数量一致、名称和顺序完全一致。
-- 说明：类别顺序决定 class ID，不允许只比较集合；校验失败时在处理图片前终止启动。
+- 日期：2026-07-19，2026-07-21 更新
+- 决策：固定类别 detection module 必须提供有序 `expected_class_names`；Ultralytics 权重加载后校验 class ID 从 0 连续、数量一致、名称和顺序完全一致。YOLO-World module 改用分组 `open_vocabulary_classes`，校验 task group、组内连续 class ID、canonical name 和 prompts。
+- 说明：两种 backend 的类别映射都必须在处理图片前完成严格校验；不能把开放词汇类别平铺后丢失 task group。
 
 ### D024：后处理失败不得删除成功推理结果
 
@@ -179,6 +179,12 @@
 - 日期：2026-07-20
 - 决策：当前实现使用 OpenAI-compatible HTTP provider，通过配置管理 endpoint、model ID、认证环境变量、timeout 和生成参数。
 - 说明：真实 Qwen2.5-VL 服务参数待确认；provider、parser 或 Fusion 失败时保留 detector 结果并降级为 `partial_success`。
+
+### D031：YOLO-World 作为可选的分组物体检测 backend
+
+- 日期：2026-07-21
+- 决策：新增 `yolo_world` backend，但不替换现有 YOLO11m。它可检测禁带品 8 类、垃圾 6 类和行为判断需要的基础物体，并将每条结果规范化为显式 `task_group`、组内 class ID 和 canonical class name。
+- 说明：YOLO-World 只负责 object-level detection。踩踏草坪、吸烟、占用消防通道、站立/躺在长椅等行为不作为其 class，后续由独立 Behavior Pipeline 处理。Qwen Review 继续接收统一 Detection Summary，无需 backend-specific 分支。
 
 ## 被替代的历史方案
 

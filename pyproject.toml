@@ -17,6 +17,10 @@ dependencies = [
 
 [project.optional-dependencies]
 ultralytics = ["ultralytics>=8.3,<9"]
+yolo-world = [
+  "ultralytics>=8.3,<9",
+  "clip @ git+https://github.com/ultralytics/CLIP.git@c4b6ea0932a2c0f39a0fa528af5ec4982ff15cab",
+]
 dev = ["pytest>=8"]
 
 [project.scripts]
