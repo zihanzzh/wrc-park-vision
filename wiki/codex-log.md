@@ -2,6 +2,34 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-07-21 YOLO-World 儿童滑板车隔离 Smoke Test
+
+本次在新分支 `experiment/yolo-world-smoke` 创建独立脚本 `experiments/yolo_world_smoke.py`，使用 Ultralytics 官方 `YOLOWorld`、`yolov8s-worldv2.pt` 和 `set_classes()` 测试图片 `test_images/微信图片_20260701150103_465_41.jpg`。脚本及输出位于已被 `.gitignore` 忽略的 `experiments/`。
+
+三轮结果（`conf=0.10`）：
+
+- A `['kick scooter']`：0 detections，推理 116.90 ms。
+- B `['kick scooter', 'kids scooter', "children's scooter", 'scooter']`：检出 1 个 `children's scooter`，confidence 0.2993，bbox `[461.50, 25.30, 2156.89, 1086.80]`，推理 50.37 ms。
+- C 在 B 基础上加入 `skateboard`：检出 1 个 `children's scooter`，confidence 0.2841，bbox `[458.97, 24.32, 2157.09, 1086.19]`，推理 48.48 ms；没有误判成 skateboard。
+
+预览输出：`experiments/outputs/yolo_world_smoke/`。B 的同义词组合在本图上表现最好；bbox 覆盖完整斜放目标，但 confidence 仍偏低，需要更多正样本、负样本和 prompt 组合测试后才能判断是否接入正式 Runtime。
+
+多类别场景续测：
+
+- 图片：`test_images/微信图片_20260701150112_475_41.jpg`；输出：`experiments/outputs/yolo_world_smoke/multi_class_round/`。
+- canonical 8 类 prompts：检出 1 个 `spray can`，confidence 0.5411，bbox `[739.13, 764.41, 1282.14, 1072.69]`，推理 87.67 ms；儿童滑板车与 speaker 未检出。
+- 有限同义词扩展 prompts：仍只检出同一 `spray can`，confidence 0.5201，bbox `[739.42, 764.73, 1281.90, 1072.19]`，推理 47.32 ms。
+- `conf=0.01` 诊断仍无 scooter / speaker 候选；另出现 3 个低于 0.08 的 `spray can` 误报，说明不能用极低阈值补召回。
+- 同图单类别对照：scooter-only 为 0，speaker-only 为 0；spray-can-only 检出同一目标，confidence 提升到 0.6753。
+- 结论：多类别 prompts 会稀释 spray can confidence，但 scooter / speaker 漏检主要来自目标局部可见、遮挡和杂乱场景，并非仅由类别竞争造成。YOLO-World 暂不替代正式自定义 detector。
+
+环境记录：
+
+- 沿用已有 `ultralytics 8.4.102`，没有升级现有包。
+- Ultralytics 为 `set_classes()` 自动安装官方 CLIP 包及其最小依赖：`clip 1.0`、`ftfy 6.3.1`、`regex 2026.7.19`、`tqdm 4.69.0`、`wcwidth 0.8.2`。
+- 自动下载 `yolov8s-worldv2.pt` 和 CLIP 文本编码器权重；权重不进入 Git。
+- 没有训练、修改数据集、改 Runtime、改正式配置、commit 或 push。
+
 ## 2026-07-20 Runtime 全图 VLM Review 与 Fusion 实现
 
 本次在现有 detector Pipeline 上增量实现 `Detection -> Detection Summary -> Review -> Fusion -> Output`，没有重写或移除原检测链路。
