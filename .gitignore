@@ -22,6 +22,7 @@ ENV/
 .env
 .env.*
 configs/runtime.local.yaml
+configs/runtime.yolo-world.local.yaml
 
 # Large data directory contents
 datasets_raw/

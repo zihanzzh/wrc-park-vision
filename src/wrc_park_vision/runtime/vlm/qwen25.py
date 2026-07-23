@@ -31,11 +31,17 @@ def _raw_response_excerpt(content: str) -> str:
 class Qwen25VLProvider(ReviewProvider):
     """Call a configured Qwen2.5-VL endpoint with the complete decoded image."""
 
-    def __init__(self, settings: ReviewProviderSettings, class_catalog: dict[str, list[str]]) -> None:
+    def __init__(
+        self,
+        settings: ReviewProviderSettings,
+        class_catalog: dict[str, list[str]],
+        visual_class_guide: dict[str, dict[str, dict[str, object]]] | None = None,
+    ) -> None:
         if not settings.enabled or settings.endpoint is None or settings.model_id is None:
             raise ValueError("Qwen2.5-VL provider requires enabled settings, endpoint, and model_id")
         self.settings = settings
         self.class_catalog = class_catalog
+        self.visual_class_guide = visual_class_guide or {}
         self.provider_name = "qwen2_5_vl"
         self.model_id = settings.model_id
 
@@ -53,7 +59,14 @@ class Qwen25VLProvider(ReviewProvider):
                     "role": "user",
                     "content": [
                         {"type": "image_url", "image_url": {"url": self._image_data_url(image)}},
-                        {"type": "text", "text": build_review_prompt(summary, self.class_catalog)},
+                        {
+                            "type": "text",
+                            "text": build_review_prompt(
+                                summary,
+                                self.class_catalog,
+                                visual_class_guide=self.visual_class_guide,
+                            ),
+                        },
                     ],
                 }
             ],

@@ -3,6 +3,10 @@ runtime:
   output_dir: runtime_outputs
 
 modules:
+  # YOLO-World 的 open_vocabulary_classes 可选写法：
+  # visual_description: "平板式板面下方有轮子。"
+  # distinguishing_rules: ["没有直立转向杆或车把。"]
+  # 完整 19 类示例见 configs/runtime.yolo-world.example.yaml。
   - id: prohibited_items
     enabled: true
     type: detection

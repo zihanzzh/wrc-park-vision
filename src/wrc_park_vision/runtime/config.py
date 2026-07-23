@@ -39,6 +39,8 @@ class OpenVocabularyClassSettings(BaseModel):
     class_id: int = Field(ge=0)
     class_name: str = Field(min_length=1)
     prompts: list[str] = Field(min_length=1)
+    visual_description: Optional[str] = None
+    distinguishing_rules: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_prompts(self) -> "OpenVocabularyClassSettings":
@@ -48,6 +50,12 @@ class OpenVocabularyClassSettings(BaseModel):
             raise ValueError(f"open-vocabulary class {self.class_name} contains a blank prompt")
         if len(self.prompts) != len(set(self.prompts)):
             raise ValueError(f"open-vocabulary class {self.class_name} contains duplicate prompts")
+        if self.visual_description is not None and not self.visual_description.strip():
+            raise ValueError(f"open-vocabulary class {self.class_name} has a blank visual_description")
+        if any(not rule.strip() for rule in self.distinguishing_rules):
+            raise ValueError(f"open-vocabulary class {self.class_name} contains a blank distinguishing rule")
+        if len(self.distinguishing_rules) != len(set(self.distinguishing_rules)):
+            raise ValueError(f"open-vocabulary class {self.class_name} contains duplicate distinguishing rules")
         if (
             self.task_group == "uncivilized_behavior"
             and self.class_name in BEHAVIOR_ACTION_CLASS_NAMES

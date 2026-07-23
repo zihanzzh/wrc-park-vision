@@ -15,80 +15,115 @@ modules:
         class_id: 0
         class_name: spray_can
         prompts: [spray can, aerosol can]
+        visual_description: "带喷嘴或喷头的加压气雾罐。"
+        distinguishing_rules: ["普通饮料罐不是 spray_can。"]
       - task_group: prohibited_items
         class_id: 1
         class_name: portable_gas_stove
         prompts: [portable gas stove, butane stove, camping stove]
+        visual_description: "小型桌面炉具，可见燃烧器、锅架或气罐舱。"
+        distinguishing_rules: ["不是带烤网的开放式 barbecue_grill。"]
       - task_group: prohibited_items
         class_id: 2
         class_name: megaphone
         prompts: [megaphone]
+        visual_description: "手持锥形扩音器，可见前端喇叭口和握柄。"
+        distinguishing_rules: ["不是箱体或网罩结构的 speaker。"]
       - task_group: prohibited_items
         class_id: 3
         class_name: skateboard
         prompts: [skateboard]
+        visual_description: "平板式板面下方有轮子。"
+        distinguishing_rules: ["没有直立转向杆或车把。"]
       - task_group: prohibited_items
         class_id: 4
         class_name: kick_scooter
         prompts: [children's scooter, kids scooter, kick scooter]
+        visual_description: "站立踏板连接直立转向杆，顶部有车把。"
+        distinguishing_rules: ["不是无车把的平板 skateboard。"]
       - task_group: prohibited_items
         class_id: 5
         class_name: speaker
         prompts: [speaker, portable speaker, bluetooth speaker]
+        visual_description: "便携音箱或扩音设备，可见扬声器网罩、箱体或控制区域。"
+        distinguishing_rules: ["不能仅凭电子设备外观判断。"]
       - task_group: prohibited_items
         class_id: 6
         class_name: roller_skates
         prompts: [roller skates]
+        visual_description: "穿在脚上的带轮鞋。"
+        distinguishing_rules: ["不是 skateboard 或 kick_scooter。"]
       - task_group: prohibited_items
         class_id: 7
         class_name: barbecue_grill
         prompts: [barbecue grill, charcoal grill]
+        visual_description: "开放式烧烤炉体，可见烤网或炭火结构。"
+        distinguishing_rules: ["不是小型桌面 portable_gas_stove。"]
 
       - task_group: garbage
         class_id: 0
         class_name: crumpled_paper_ball
         prompts: [crumpled paper ball, paper ball]
+        visual_description: "明显揉皱成团的纸。"
+        distinguishing_rules: ["不是压扁塑料瓶或薄塑料包装。"]
       - task_group: garbage
         class_id: 1
         class_name: disposable_food_container
         prompts: [disposable food container, takeout food container]
+        visual_description: "一次性餐盒、外卖盒或食品容器，可见盒体、盖子或托盘。"
+        distinguishing_rules: ["不是手提袋或薄软包装。"]
       - task_group: garbage
         class_id: 2
         class_name: empty_cigarette_box
-        prompts: [empty cigarette box, cigarette pack]
+        prompts: [discarded cigarette box, empty cigarette pack, flattened cigarette box]
+        visual_description: "被丢弃、压扁或打开的香烟包装盒。"
+        distinguishing_rules: ["正常使用且未显示为空的 cigarette pack 不算 empty_cigarette_box。"]
       - task_group: garbage
         class_id: 3
         class_name: plastic_drink_bottle
         prompts: [plastic drink bottle]
+        visual_description: "塑料饮料瓶，可见瓶口、瓶盖、瓶身或标签结构。"
+        distinguishing_rules: ["压扁后仍按瓶体结构识别，不是 crumpled_paper_ball。"]
       - task_group: garbage
         class_id: 4
         class_name: plastic_food_wrapper
         prompts: [plastic food wrapper]
+        visual_description: "薄而柔软的食品塑料包装，常见封边或印刷包装形态。"
+        distinguishing_rules: ["不是纸团或能保持形状的 rigid_takeout_bag。"]
       - task_group: garbage
         class_id: 5
         class_name: rigid_takeout_bag
-        prompts: [rigid takeout bag, takeout bag]
+        prompts: [structured takeout carrier bag, box-shaped takeaway bag, rigid takeaway bag]
+        visual_description: "能保持形状的外卖手提袋或盒状承载袋，可见袋体或提手。"
+        distinguishing_rules: ["不是薄软的 plastic_food_wrapper。"]
 
       - task_group: uncivilized_behavior
         class_id: 0
         class_name: person
         prompts: [person]
+        visual_description: "可见人体或主要身体轮廓。"
       - task_group: uncivilized_behavior
         class_id: 1
         class_name: bench
         prompts: [bench, park bench]
+        visual_description: "供人坐卧的长条座面，通常有支腿或靠背。"
       - task_group: uncivilized_behavior
         class_id: 2
         class_name: grass
         prompts: [grass, lawn]
+        visual_description: "连续草叶覆盖的草坪或草地区域。"
+        distinguishing_rules: ["不能只凭绿色区域判断。"]
       - task_group: uncivilized_behavior
         class_id: 3
         class_name: cigarette
         prompts: [cigarette]
+        visual_description: "细小柱状香烟，可见滤嘴或燃烧端。"
+        distinguishing_rules: ["香烟盒不是单支 cigarette。"]
       - task_group: uncivilized_behavior
         class_id: 4
         class_name: vehicle
         prompts: [vehicle, car]
+        visual_description: "可载人或货物的车辆主体，可见车身和车轮。"
     device: auto
     confidence: 0.10
     iou: 0.70

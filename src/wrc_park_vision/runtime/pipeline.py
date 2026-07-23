@@ -138,6 +138,25 @@ def build_class_catalog(config: RuntimeConfig) -> dict[str, list[str]]:
     return catalog
 
 
+def build_visual_class_guide(
+    config: RuntimeConfig,
+) -> dict[str, dict[str, dict[str, object]]]:
+    guide: dict[str, dict[str, dict[str, object]]] = {}
+    for settings in config.modules:
+        if not settings.enabled or not settings.open_vocabulary_classes:
+            continue
+        for item in settings.open_vocabulary_classes:
+            if item.visual_description is None and not item.distinguishing_rules:
+                continue
+            details: dict[str, object] = {}
+            if item.visual_description is not None:
+                details["visual"] = item.visual_description
+            if item.distinguishing_rules:
+                details["distinguish"] = list(item.distinguishing_rules)
+            guide.setdefault(item.task_group, {})[item.class_name] = details
+    return guide
+
+
 class RuntimePipeline:
     def __init__(
         self,
@@ -166,8 +185,13 @@ class RuntimePipeline:
             raise
         try:
             class_catalog = build_class_catalog(config)
+            visual_class_guide = build_visual_class_guide(config)
             if review_provider is None and config.review.provider.enabled:
-                review_provider = Qwen25VLProvider(config.review.provider, class_catalog)
+                review_provider = Qwen25VLProvider(
+                    config.review.provider,
+                    class_catalog,
+                    visual_class_guide=visual_class_guide,
+                )
             self.review = ReviewCoordinator(config.review, review_provider)
         except Exception:
             for loaded_module in loaded_modules:

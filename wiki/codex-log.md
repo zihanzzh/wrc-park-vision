@@ -2,6 +2,24 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-07-23 Qwen2.5-VL-7B 视觉类别准确率优化
+
+Thor 已跑通完整 Runtime：YOLO-World 约 0.87 秒、VLM Review 约 2.61 秒、总时间约 3.50 秒，`status=success` 且 JSON 可解析；但真实 `kick_scooter` 曾被 7B 判断为 `skateboard`。本次保持单次全图 VLM 请求、业务 schema、Fusion 和 Behavior 架构不变，增加配置驱动的紧凑视觉类别指南：
+
+- YOLO-World `open_vocabulary_classes` 新增可选 `visual_description` 和 `distinguishing_rules`；旧配置缺失字段时继续正常加载。
+- Pipeline 仅从启用模块收集视觉定义并传给 Qwen provider；Prompt Builder 不硬编码具体对象类别。
+- Prompt 将对象类别目录和视觉指南合并为一份紧凑 JSON，加入按可见结构分类、关键结构不清时返回 `uncertain`、不得用近似错误类别替代等短规则。
+- 为 8 类禁带品、6 类垃圾和 5 类行为辅助对象补充视觉定义，重点覆盖 `skateboard` / `kick_scooter`、`portable_gas_stove` / `barbecue_grill`、纸团 / 塑料瓶 / 塑料包装的结构差异。
+- 将 `empty_cigarette_box` prompts 收窄为废弃、空或压扁烟盒；将 `rigid_takeout_bag` prompts 收窄为结构化、盒状或硬挺外卖袋。
+- `configs/runtime.yolo-world.local.yaml` 使用同一正式类别定义并保持 Git 忽略；没有修改 class_id/class_name 映射、`max_tokens=1200` 或非 YOLO-World detector 配置。
+
+验证结果：
+
+- 配置、Prompt、Review、Behavior、Pipeline 和 Fusion 专项测试通过。
+- 全部 Runtime `unittest` 71 项通过。
+- `compileall` 和 `git diff --check` 通过。
+- 本次没有运行真实模型、安装依赖、commit 或 push；视觉指南对 Thor 7B 准确率和延迟的实际影响仍需三类任务系统复测。
+
 ## 2026-07-23 Qwen2.5-VL-7B Prompt 稳定性与延迟优化
 
 Thor 实测确认 `Qwen2.5-VL-7B-Instruct-AWQ` 能返回内容，但会把旧 JSON 模板中的 `"允许的 task_group"` 原样复制，触发 `unknown VLM task_group`。本次保持单次全图 VLM 请求和现有 schema，不改变 Runtime 架构：

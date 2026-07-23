@@ -2,9 +2,19 @@
 
 ## 当前阶段
 
-禁带品与垃圾两个独立 detector 已完成训练，并已在 macOS 和 NVIDIA Thor 上跑通现有 Runtime 检测链路。YOLO-World backend 和单图 Behavior Pipeline 已接入共享 Runtime；当前等待真实 Qwen 服务联调与 Thor 性能验证。
+禁带品与垃圾两个独立 detector 已完成训练，并已在 macOS 和 NVIDIA Thor 上跑通现有 Runtime 检测链路。YOLO-World backend、单图 Behavior Pipeline 和 Qwen2.5-VL Review 已接入共享 Runtime；Thor 上的 7B 完整链路已经跑通，当前重点转向细粒度类别准确率与三类任务系统测试。
 
 本轮已完成代码实现与 mock 自动测试，没有运行真实 Qwen2.5-VL、训练模型、修改数据集、安装依赖或 push。
+
+## Qwen2.5-VL-7B 视觉类别指南
+
+- Thor 上 `Qwen2.5-VL-7B-Instruct-AWQ` 实测：YOLO-World 约 0.87 秒、VLM Review 约 2.61 秒、总时间约 3.50 秒，`status=success`，JSON 可正常解析且每张图片仍只有一次 VLM 请求。
+- 当前主要问题由响应格式和延迟转为细粒度类别准确率：测试中的 `kick_scooter` 曾被 7B 误判为 `skateboard`。
+- YOLO-World 类别配置新增可选 `visual_description` 与 `distinguishing_rules`，Prompt 会为当前启用类别动态生成紧凑视觉指南。
+- 8 类禁带品、6 类垃圾和 5 类行为辅助对象均已补充可见结构定义；重点明确滑板/儿童滑板车、卡式炉/烧烤炉、纸团/塑料瓶/塑料包装等相似类别的差异。
+- `empty_cigarette_box` 和 `rigid_takeout_bag` 的 YOLO-World prompts 已收窄，避免把普通烟盒或宽泛外卖袋直接当作目标。
+- 旧配置不提供视觉定义时仍可加载并构建 Prompt；非 YOLO-World detector 不受影响。
+- 尚未完成禁带品、垃圾和不文明行为三类任务的系统真实图片测试，视觉指南对 Thor 7B 准确率的提升仍需复测确认。
 
 ## Qwen2.5-VL-7B Prompt 优化
 
@@ -13,7 +23,7 @@
 - `reasoning` 默认建议为 `null`，必要时只允许极短句，以减少输出 token。
 - Parser 仍严格拒绝非法业务类别，只新增标识符首尾空格清理。
 - Provider 在解析失败时会把最长 512 字符的 VLM 原始响应摘录附加到错误信息，便于 Thor 调试，不改变成功路径。
-- 单次全图 VLM 请求架构保持不变；Thor 7B 修复后实测延迟和稳定性仍待复测。
+- 单次全图 VLM 请求架构保持不变；Thor 7B 已跑通合法 JSON，下一步复测视觉指南对准确率的影响。
 
 ## YOLO-World 隔离实验
 
@@ -57,7 +67,7 @@
 
 当前明确未完成：
 
-- 真实 Qwen2.5-VL endpoint 联调与效果验证。
+- 三类任务的真实 Qwen2.5-VL 系统效果验证。
 - 请求级 10 秒 deadline；当前 provider 只有单次 HTTP 10 秒 timeout。
 - 多帧 behavior、tracking、pose 和区域关系增强。
 - TensorRT backend、正式 Thor engine 部署与 benchmark。
@@ -65,12 +75,12 @@
 
 ## 验证状态
 
-- 自动测试：67 项通过。
+- 自动测试：71 项通过。
 - Python `compileall`：通过。
 - `git diff --check`：通过。
 - Qwen 请求测试使用 mock HTTP，确认发送完整图片 data URL 和 Detection Summary prompt，没有访问真实服务。
 - detector 实际运行：macOS 与 NVIDIA Thor 已跑通。
-- VLM 实际运行：Thor 7B 请求已成功到达并返回内容；旧 Prompt 导致解析失败，修复后待复测。
+- VLM 实际运行：Thor 7B 已完成单次全图 Review 并返回合法 JSON；当前需要复测配置驱动视觉指南的分类准确率。
 - 10 秒完整链路：尚未实测。
 
 ## 数据与设备边界
@@ -82,9 +92,8 @@
 
 ## 下一步
 
-1. 确认 Qwen2.5-VL 的实际服务 endpoint、model ID、认证方式和运行设备。
-2. 在 gitignored 本地配置中启用 Review provider，使用固定验收图片做真实 VLM smoke test。
+1. 在 Thor 上用固定验收图片复测 `skateboard` / `kick_scooter` 等相似类别，记录视觉指南启用前后的准确率与耗时。
+2. 对 8 类禁带品、6 类垃圾和四类不文明行为执行系统真实图片测试。
 3. 人工核对 confirm / reject / correct / VLM-only finding，以及 JSON 与 Preview 一致性。
-4. 测量 detector、Review、Fusion 和完整请求耗时，验证 10 秒超时与降级策略。
-5. 根据真实响应稳定性调整 prompt、parser 容错边界和比赛动作策略。
-6. 在 Thor 上复测 7B 的合法 JSON 成功率、首 token/总耗时和截断响应诊断信息。
+4. 持续测量 detector、Review、Fusion 和完整请求耗时，验证 10 秒超时与降级策略。
+5. 根据真实响应稳定性微调配置中的视觉定义，不放宽 Parser 的业务类别边界。

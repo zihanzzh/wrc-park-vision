@@ -24,6 +24,58 @@ CATALOG = {
     "garbage": ["plastic_drink_bottle"],
 }
 
+VISUAL_TEST_CATALOG = {
+    "prohibited_items": [
+        "portable_gas_stove",
+        "skateboard",
+        "kick_scooter",
+        "barbecue_grill",
+    ],
+    "garbage": [
+        "crumpled_paper_ball",
+        "plastic_drink_bottle",
+        "plastic_food_wrapper",
+    ],
+}
+
+VISUAL_TEST_GUIDE = {
+    "prohibited_items": {
+        "portable_gas_stove": {
+            "visual": "小型桌面炉具，可见燃烧器、锅架或气罐舱。",
+            "distinguish": ["不是带烤网的开放式 barbecue_grill。"],
+        },
+        "skateboard": {
+            "visual": "平板式板面下方有轮子。",
+            "distinguish": ["没有直立转向杆或车把。"],
+        },
+        "kick_scooter": {
+            "visual": "站立踏板连接直立转向杆，顶部有车把。",
+            "distinguish": ["不是无车把的平板 skateboard。"],
+        },
+        "barbecue_grill": {
+            "visual": "开放式烧烤炉体，可见烤网或炭火结构。",
+            "distinguish": ["不是小型桌面 portable_gas_stove。"],
+        },
+        "roller_skates": {
+            "visual": "穿在脚上的带轮鞋。",
+        },
+    },
+    "garbage": {
+        "crumpled_paper_ball": {
+            "visual": "明显揉皱成团的纸。",
+            "distinguish": ["不是压扁塑料瓶或薄塑料包装。"],
+        },
+        "plastic_drink_bottle": {
+            "visual": "塑料饮料瓶，可见瓶口、瓶盖、瓶身或标签结构。",
+            "distinguish": ["压扁后仍按瓶体结构识别，不是 crumpled_paper_ball。"],
+        },
+        "plastic_food_wrapper": {
+            "visual": "薄而柔软的食品塑料包装，常见封边或印刷包装形态。",
+            "distinguish": ["不是纸团。"],
+        },
+    },
+}
+
 
 def make_summary() -> DetectionSummary:
     return DetectionSummary(
@@ -58,6 +110,26 @@ class VLMReviewTests(unittest.TestCase):
         self.assertNotIn("合法类别", prompt)
         self.assertNotIn("类别名称", prompt)
         self.assertNotIn("填写", prompt)
+        self.assertIn("只输出一个 JSON object", prompt)
+
+    def test_prompt_uses_compact_visual_guide_for_enabled_classes(self) -> None:
+        prompt = build_review_prompt(
+            make_summary(),
+            VISUAL_TEST_CATALOG,
+            visual_class_guide=VISUAL_TEST_GUIDE,
+        )
+
+        self.assertIn("平板式板面下方有轮子", prompt)
+        self.assertIn("没有直立转向杆或车把", prompt)
+        self.assertIn("站立踏板连接直立转向杆，顶部有车把", prompt)
+        self.assertIn("燃烧器、锅架或气罐舱", prompt)
+        self.assertIn("开放式烧烤炉体", prompt)
+        self.assertIn("明显揉皱成团的纸", prompt)
+        self.assertIn("瓶口、瓶盖、瓶身或标签结构", prompt)
+        self.assertIn("薄而柔软的食品塑料包装", prompt)
+        self.assertNotIn("roller_skates", prompt)
+        self.assertNotIn("允许的 task_group", prompt)
+        self.assertNotIn("允许的 class_name", prompt)
 
     def test_parser_accepts_minimal_7b_response_and_empty_reasoning(self) -> None:
         content = json.dumps(
@@ -220,7 +292,17 @@ class VLMReviewTests(unittest.TestCase):
             endpoint="http://localhost:8000/v1/chat/completions",
             model_id="Qwen2.5-VL",
         )
-        provider = Qwen25VLProvider(settings, CATALOG)
+        provider = Qwen25VLProvider(
+            settings,
+            CATALOG,
+            visual_class_guide={
+                "prohibited_items": {
+                    "spray_can": {
+                        "visual": "带喷嘴或喷头的加压气雾罐。",
+                    }
+                }
+            },
+        )
         image = ValidatedImage("image.jpg", Image.new("RGB", (100, 80), "white"), 100, 80)
         response_payload = {
             "choices": [
@@ -263,6 +345,7 @@ class VLMReviewTests(unittest.TestCase):
         content = captured["body"]["messages"][0]["content"]
         self.assertTrue(content[0]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
         self.assertIn("检查完整图片", content[1]["text"])
+        self.assertIn("带喷嘴或喷头的加压气雾罐", content[1]["text"])
         self.assertEqual(captured["calls"], 1)
         self.assertEqual(captured["timeout"], 10.0)
         self.assertEqual(result.decisions[0].verdict, "confirmed")

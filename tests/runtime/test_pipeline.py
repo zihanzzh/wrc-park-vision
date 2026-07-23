@@ -8,7 +8,12 @@ from unittest.mock import patch
 from wrc_park_vision.runtime.backends.base import BackendDetection
 from wrc_park_vision.runtime.modules.detection import DetectionModule
 from wrc_park_vision.runtime.config import RuntimeConfig
-from wrc_park_vision.runtime.pipeline import RuntimePipeline, build_class_catalog, build_modules
+from wrc_park_vision.runtime.pipeline import (
+    RuntimePipeline,
+    build_class_catalog,
+    build_modules,
+    build_visual_class_guide,
+)
 from wrc_park_vision.runtime.review import ReviewProvider
 from wrc_park_vision.runtime.schemas import (
     DetectionSummary,
@@ -134,6 +139,8 @@ class PipelineTests(unittest.TestCase):
                                 "class_id": 0,
                                 "class_name": "spray_can",
                                 "prompts": ["spray can"],
+                                "visual_description": "带喷头的气雾罐。",
+                                "distinguishing_rules": ["普通饮料罐不是喷雾罐。"],
                             },
                             {
                                 "task_group": "garbage",
@@ -167,6 +174,65 @@ class PipelineTests(unittest.TestCase):
                 "garbage": ["plastic_drink_bottle"],
             },
         )
+        self.assertEqual(
+            build_visual_class_guide(config),
+            {
+                "prohibited_items": {
+                    "spray_can": {
+                        "visual": "带喷头的气雾罐。",
+                        "distinguish": ["普通饮料罐不是喷雾罐。"],
+                    }
+                }
+            },
+        )
+
+    def test_visual_class_guide_omits_disabled_modules(self) -> None:
+        config = RuntimeConfig.model_validate(
+            {
+                "modules": [
+                    {
+                        "id": "enabled_world",
+                        "enabled": True,
+                        "type": "detection",
+                        "task_group": "object_detection",
+                        "backend": "yolo_world",
+                        "model_path": Path("world.pt"),
+                        "model_id": "world_model",
+                        "open_vocabulary_classes": [
+                            {
+                                "task_group": "prohibited_items",
+                                "class_id": 0,
+                                "class_name": "skateboard",
+                                "prompts": ["skateboard"],
+                                "visual_description": "平板式板面下方有轮子。",
+                            }
+                        ],
+                    },
+                    {
+                        "id": "disabled_world",
+                        "enabled": False,
+                        "type": "detection",
+                        "task_group": "object_detection",
+                        "backend": "yolo_world",
+                        "model_id": "unused",
+                        "open_vocabulary_classes": [
+                            {
+                                "task_group": "prohibited_items",
+                                "class_id": 0,
+                                "class_name": "roller_skates",
+                                "prompts": ["roller skates"],
+                                "visual_description": "穿在脚上的带轮鞋。",
+                            }
+                        ],
+                    },
+                ]
+            }
+        )
+
+        guide = build_visual_class_guide(config)
+
+        self.assertIn("skateboard", guide["prohibited_items"])
+        self.assertNotIn("roller_skates", guide["prohibited_items"])
 
     def test_all_modules_failure(self) -> None:
         modules = [
