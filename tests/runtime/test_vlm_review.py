@@ -7,7 +7,13 @@ from unittest.mock import patch
 from PIL import Image
 
 from wrc_park_vision.runtime.config import ReviewProviderSettings
-from wrc_park_vision.runtime.schemas import DetectionSummary, DetectionSummaryItem, ValidatedImage
+from wrc_park_vision.runtime.schemas import (
+    BehaviorCandidate,
+    BehaviorClassSummary,
+    DetectionSummary,
+    DetectionSummaryItem,
+    ValidatedImage,
+)
 from wrc_park_vision.runtime.vlm.parser import ReviewResponseError, parse_review_response
 from wrc_park_vision.runtime.vlm.prompt import build_review_prompt
 from wrc_park_vision.runtime.vlm.qwen25 import Qwen25VLProvider
@@ -44,6 +50,8 @@ class VLMReviewTests(unittest.TestCase):
         self.assertIn("只是 YOLO 检测上下文", prompt)
         self.assertIn("被 YOLO 完全漏掉", prompt)
         self.assertIn("不要输出 bbox", prompt)
+        self.assertIn("behavior_candidates", prompt)
+        self.assertIn("全图行为发现", prompt)
 
     def test_parser_preserves_correction_and_vlm_only_finding(self) -> None:
         content = json.dumps(
@@ -68,10 +76,66 @@ class VLMReviewTests(unittest.TestCase):
                 ],
             }
         )
-        decisions, findings = parse_review_response(content, make_summary(), CATALOG)
+        decisions, findings, behaviors = parse_review_response(content, make_summary(), CATALOG)
         self.assertEqual(decisions[0].verdict, "corrected")
         self.assertEqual(findings[0].id, "vlm-0001")
         self.assertIsNone(findings[0].geometry)
+        self.assertEqual(behaviors, [])
+
+    def test_parser_handles_candidate_review_and_full_image_behavior(self) -> None:
+        summary = make_summary().model_copy(
+            update={
+                "behavior_classes": [
+                    BehaviorClassSummary(
+                        class_id=0,
+                        class_name="trampling_grass",
+                        required_object_classes=["person", "grass"],
+                    ),
+                    BehaviorClassSummary(
+                        class_id=2,
+                        class_name="blocking_fire_lane",
+                        required_object_classes=["vehicle"],
+                    ),
+                ],
+                "behavior_candidates": [
+                    BehaviorCandidate(
+                        id="behavior-candidate-0001",
+                        class_id=0,
+                        class_name="trampling_grass",
+                        evidence_observation_ids=["obs-0001"],
+                        evidence_class_names=["person", "grass"],
+                    )
+                ],
+            }
+        )
+        content = json.dumps(
+            {
+                "yolo_reviews": [{"observation_id": "obs-0001", "verdict": "confirmed"}],
+                "new_findings": [],
+                "behavior_reviews": [
+                    {
+                        "candidate_id": "behavior-candidate-0001",
+                        "class_name": "trampling_grass",
+                        "verdict": "rejected",
+                        "reasoning": "person is beside the grass",
+                    },
+                    {
+                        "candidate_id": None,
+                        "class_name": "blocking_fire_lane",
+                        "verdict": "confirmed",
+                        "confidence": 0.82,
+                        "reasoning": "vehicle blocks the marked fire lane",
+                    },
+                ],
+            }
+        )
+
+        _, _, behaviors = parse_review_response(content, summary, CATALOG)
+
+        self.assertEqual([item.verdict for item in behaviors], ["rejected", "confirmed"])
+        self.assertEqual(behaviors[0].evidence_observation_ids, ["obs-0001"])
+        self.assertIsNone(behaviors[1].candidate_id)
+        self.assertEqual(behaviors[1].class_id, 2)
 
     def test_parser_rejects_localization_and_incomplete_coverage(self) -> None:
         with self.assertRaises(ReviewResponseError):
@@ -132,6 +196,7 @@ class VLMReviewTests(unittest.TestCase):
         captured = {}
 
         def fake_urlopen(request, timeout):
+            captured["calls"] = captured.get("calls", 0) + 1
             captured["body"] = json.loads(request.data.decode("utf-8"))
             captured["timeout"] = timeout
             return FakeResponse()
@@ -142,6 +207,7 @@ class VLMReviewTests(unittest.TestCase):
         content = captured["body"]["messages"][0]["content"]
         self.assertTrue(content[0]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
         self.assertIn("完整原始图片", content[1]["text"])
+        self.assertEqual(captured["calls"], 1)
         self.assertEqual(captured["timeout"], 10.0)
         self.assertEqual(result.decisions[0].verdict, "confirmed")
 

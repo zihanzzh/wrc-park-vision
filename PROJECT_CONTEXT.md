@@ -19,7 +19,7 @@
 - 准备 NVIDIA Jetson AGX Thor Developer Kit 的多模型部署和 TensorRT 验证。
 - 接入真实 Qwen2.5-VL 服务并验证 10 秒超时与降级行为。
 
-不文明行为尚未形成最终数据集和模型，需要独立设计并通过 behavior module 接入同一 Runtime Pipeline。
+不文明行为尚未形成独立训练数据集和专用模型；当前已实现单图 Behavior Pipeline，使用 YOLO-World 基础对象、配置化候选规则和现有一次全图 Qwen Review 共同判断四类行为。
 
 ## 最新模型决策
 
@@ -38,18 +38,21 @@
 - 机器人只发送图片，不发送 `taskId`、`taskType`、`mode` 或 `category`。
 - 正式 Runtime v1 已实现配置加载、输入校验、模块注册、顺序执行、模块故障隔离、统一 schema、冲突标记、review decision、JSON、Preview 和 CLI。
 - `prohibited_items` 与 `garbage` 通过配置注册为通用 `DetectionModule`，主 Pipeline 不写死模型数量、类别或路径。
+- 可选 YOLO-World backend 可在同一模型中输出禁带品、垃圾和行为相关基础对象，并保留每条 detection 的 `task_group`。
 - 模型启动时加载一次；enabled 模型路径缺失时明确失败，不允许自动下载。
 - enabled detection module 必须声明有序 `expected_class_names`；Ultralytics 权重加载后、图片处理前严格校验类别 ID、数量、名称和顺序。
 - Pipeline 根据模型来源写入 `task_group`，不同模型保留各自 class id 空间。
 - 跨 task group 高 IoU 结果全部保留，并互相标记 `cross_model_overlap`，不实施业务优先级删除。
 - 已实现 Detection Summary、Qwen2.5-VL provider 接口、全图 Prompt Builder、严格 Response Parser 和最终 Fusion。
+- 已实现配置驱动的单图 Behavior Pipeline：基础对象只生成候选，最终行为必须由同一次全图 VLM 请求确认；无候选时仍允许全图发现明显行为。
+- 当前正式行为类别为 `trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。
 - VLM 接收完整原图，Detection Summary 仅作为上下文；VLM 可以确认、拒绝、纠正 YOLO，并报告没有 bbox 的漏检 finding。
 - bbox 始终由 YOLO observation 提供；VLM 不输出或修正坐标。
 - JSON 与 Preview 使用同一个最终 `PipelineResponse`，Preview 不重新推理或重算 bbox。
 - Fusion 或 Review 失败不会删除成功模块的 observations；结果保留并以 `partial_success` 和阶段错误返回。
 - `Observation.track_id` 已预留且单图流程默认为 `null`；Tracking 和多帧融合尚未实现。
 - 当前执行策略固定为 sequential，只记录耗时，尚未实现强制 timeout 或 10 秒 deadline。
-- behavior 和 TensorRT 仍保留接口或 schema 扩展点；Qwen provider 已实现，但尚未连接真实 VLM 服务。
+- Behavior 的单图语义链路已实现；多帧、tracking、pose/区域关系增强和 TensorRT 仍是后续扩展。Qwen provider 已实现，但尚未连接真实 VLM 服务。
 
 核心自动测试使用 FakeBackend 和 mock HTTP，不调用真实 YOLO 或 VLM；detector 实际运行已由 macOS 与 Thor 验证。
 

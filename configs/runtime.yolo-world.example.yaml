@@ -94,6 +94,25 @@ modules:
     iou: 0.70
     imgsz: 640
 
+behavior:
+  enabled: true
+  module_id: behavior_pipeline
+  task_group: uncivilized_behavior
+  object_task_group: uncivilized_behavior
+  classes:
+    - class_id: 0
+      class_name: trampling_grass
+      required_object_classes: [person, grass]
+    - class_id: 1
+      class_name: smoking
+      required_object_classes: [person, cigarette]
+    - class_id: 2
+      class_name: blocking_fire_lane
+      required_object_classes: [vehicle]
+    - class_id: 3
+      class_name: standing_or_lying_on_bench
+      required_object_classes: [person, bench]
+
 review:
   low_confidence_threshold: 0.45
   cross_model_iou_threshold: 0.75

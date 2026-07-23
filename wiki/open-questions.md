@@ -60,8 +60,8 @@
 
 ## 不文明行为
 
-- 五类行为的比赛判定边界和验收样例是什么？
-- 是否需要独立 YOLO、segmentation、pose、tracking、区域规则或 VLM 组合？
+- 四类行为的精确比赛判定边界、置信度使用方式和验收样例是什么？
+- 单图 VLM 方案是否需要增加独立 YOLO、segmentation、pose、tracking 或区域规则来满足准确率？
 - 需要哪些 bbox、mask、pose、区域或视频片段标注？
 - behavior module 的数据负责人、实现负责人和时间表是什么？
 - 在比赛剩余时间内，behavior module 的最小可交付范围是什么？

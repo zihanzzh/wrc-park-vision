@@ -85,11 +85,12 @@ class Qwen25VLProvider(ReviewProvider):
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Qwen2.5-VL review request failed: {exc}") from exc
         content = self._response_content(payload)
-        decisions, findings = parse_review_response(content, summary, self.class_catalog)
+        decisions, findings, behaviors = parse_review_response(content, summary, self.class_catalog)
         return VLMReviewResult(
             provider="qwen2_5_vl",
             model_id=self.settings.model_id,
             duration_ms=(time.perf_counter() - started) * 1000.0,
             decisions=decisions,
             findings=findings,
+            behaviors=behaviors,
         )

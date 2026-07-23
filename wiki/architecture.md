@@ -66,7 +66,7 @@ image path
 - Review 或 Final Fusion 失败时保留已有 YOLO observations；只要至少一个模块成功，后处理失败返回 `partial_success`。
 - `Observation.track_id` 已作为可空字段预留，`RequestContext` 支持 ISO 8601 timestamp 和非负 frame index；当前没有实现 Tracking 或多帧融合。
 - schema 已为 `mask`、`pose`、`region` 和 `relation` 预留 observation geometry。
-- TensorRT backend 和 behavior module 当前明确返回未实现错误，不伪造能力。
+- TensorRT backend 和未来独立 behavior model module 仍明确返回未实现错误；当前单图 Behavior Pipeline 已作为检测后的语义阶段实现。
 - Review provider 默认关闭；启用后通过 OpenAI-compatible endpoint 调用 Qwen2.5-VL，发送完整原图和 Detection Summary。
 - Response Parser 要求逐条复核 Detection Summary 中的 YOLO detection，并拒绝 VLM 输出定位字段。
 - Final Fusion 不修改原始 YOLO 类别和 bbox；纠正、拒绝和 VLM-only finding 通过独立决策记录表达。
@@ -118,19 +118,29 @@ Runtime v1 当前负责：
 
 垃圾 detector 保持最终 Roboflow `data.yaml` 的 6 类 class id，不重新映射。
 
-### 4. Behavior Module
+### 4. Behavior Pipeline
 
-Runtime 预留独立 behavior module 接口，并补充 `task_group: uncivilized_behavior`。
+当前已实现单图、配置驱动的 Behavior Pipeline，输出 `task_group: uncivilized_behavior`。正式四类为：
 
-该模块尚未定型，可能包含：
+- `trampling_grass`
+- `smoking`
+- `blocking_fire_lane`
+- `standing_or_lying_on_bench`
 
-- 独立 YOLO detector。
-- YOLO segmentation。
-- pose / action 线索。
-- 人与 bench、草坪、消防通道等区域的位置关系。
-- tracking、多帧时序、规则层和 VLM。
+执行流程：
 
-不能预设五类不文明行为都能作为普通 object detection 类别直接解决。
+```text
+YOLO-World 基础对象 observations
+  -> 配置化 candidate rules
+  -> Detection Summary 携带 behavior classes/candidates
+  -> 同一次全图 Qwen Review 验证 candidate 并扫描漏检行为
+  -> 仅 confirmed 结果生成 kind: behavior observation
+  -> Fusion / JSON / Preview
+```
+
+`person + grass`、`person + cigarette`、`vehicle`、`person + bench` 只生成 candidate，不能直接判定行为。即使没有 candidate，启用的 Qwen provider 仍需在同一次请求中扫描四类明显行为。当前行为 observation 可以没有 geometry，但会保留 VLM reasoning 和已有 evidence observation IDs。
+
+当前没有实现多帧、tracking、pose、segmentation 或消防通道区域模型；这些能力后续可在 Behavior Pipeline 内增加，不需要重写主 Pipeline。
 
 ### 4.1 YOLO-World Object Backend
 
@@ -140,7 +150,7 @@ YOLO-World 是现有 detector 集合中的可选 backend，不替代两个已训
 - `garbage`：正式 6 类垃圾。
 - `uncivilized_behavior`：`person`、`bench`、`grass`、`cigarette`、`vehicle` 等行为判断需要的基础物体。
 
-`trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_on_bench`、`lying_on_bench` 等行为不得作为 YOLO-World class。这些语义需要由后续 Behavior Pipeline 结合基础对象、区域、姿态、关系、tracking 和 VLM 判断。
+`trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench` 不得作为 YOLO-World class。这些语义由 Behavior Pipeline 结合基础对象和全图 VLM 判断，后续可继续加入区域、姿态、关系和 tracking。
 
 开放词汇配置可以为一个 canonical 类别提供有限同义 prompts。backend 输出会把命中的 prompt 规范化为组内 class ID 和 canonical class name；Qwen Review 继续只接收统一 Detection Summary，不感知 backend 差异。
 
@@ -196,9 +206,11 @@ Runtime v1 采用保守规则：
 ### 8. Detection Summary 与 Qwen / VLM
 
 - Detection Summary 包含 observation ID、`task_group`、类别、置信度、YOLO bbox、冲突和 review 原因。
+- Detection Summary 同时包含正式行为类别和由基础对象生成的 behavior candidates。
 - Summary 只提供上下文；Qwen2.5-VL 接收完整图片并独立观察全图。
 - VLM 对每条 YOLO detection 返回 `confirmed`、`rejected`、`corrected` 或 `uncertain`。
 - VLM 可以通过 `new_findings` 报告 YOLO 漏检的项目类别目标；finding 不包含 bbox。
+- 同一次 VLM 响应通过 `behavior_reviews` 确认或否定候选，并可报告没有 candidate 的全图行为发现。
 - parser 严格校验 observation 覆盖、重复 ID、任务类别目录和返回结构，并拒绝 bbox / mask / polygon 等额外定位字段。
 - provider 默认关闭，因此现有 detector-only Pipeline 继续工作；启用 provider 后每张输入图片执行一次全图 Review。
 - VLM 真实延迟与效果尚未验证，不能用 mock 测试推断比赛性能。
@@ -206,6 +218,7 @@ Runtime v1 采用保守规则：
 ### 9. Final Fusion 与输出
 
 - `observations` 保留原始 YOLO 结果及其 geometry，不因 VLM 拒绝或纠正而删除或改写。
+- VLM `confirmed` 的行为以 `kind: behavior` observation 加入结果；同一行为类别单图只保留一条，不确认则不添加。
 - `review.decisions` 与 `review.findings` 保留 VLM 原始语义结论。
 - `fusion.decisions` 明确记录 `keep_yolo`、`reject_yolo`、`correct_yolo` 或 `add_vlm_finding`。
 - `geometry_source: yolo` 表示坐标来自 YOLO；VLM-only finding 使用 `geometry_source: none`。

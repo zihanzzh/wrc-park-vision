@@ -2,7 +2,7 @@
 
 ## 当前阶段
 
-禁带品与垃圾两个独立 detector 已完成训练，并已在 macOS 和 NVIDIA Thor 上跑通现有 Runtime 检测链路。当前进入 VLM Review Pipeline 实现与联调阶段。
+禁带品与垃圾两个独立 detector 已完成训练，并已在 macOS 和 NVIDIA Thor 上跑通现有 Runtime 检测链路。YOLO-World backend 和单图 Behavior Pipeline 已接入共享 Runtime；当前等待真实 Qwen 服务联调与 Thor 性能验证。
 
 本轮已完成代码实现与 mock 自动测试，没有运行真实 Qwen2.5-VL、训练模型、修改数据集、安装依赖或 push。
 
@@ -19,9 +19,10 @@
 
 ```text
 完整图片
-  -> prohibited_items / garbage detection modules
-  -> Detection Summary
-  -> 可选 Qwen2.5-VL 全图 Review
+  -> prohibited_items / garbage / behavior object detection
+  -> Detection Summary + behavior candidates
+  -> 一次可选 Qwen2.5-VL 全图 Review
+  -> object review + missed objects + behavior review/full-image scan
   -> Final Fusion
   -> PipelineResponse
   -> result.json / preview.jpg
@@ -40,18 +41,22 @@
 - Review 或 Fusion 失败时保留 detector 结果，并返回阶段错误和 `partial_success`。
 - JSON 与 Preview 使用同一个最终 `PipelineResponse`；VLM-only finding 只在预览信息区显示，不绘制推测框。
 - Qwen provider 默认关闭，detector-only 配置继续保持可用。
+- Behavior Pipeline 根据配置化关系生成候选：`person + grass`、`person + cigarette`、`vehicle`、`person + bench`。
+- candidate 不会直接成为行为；只有 VLM `confirmed` 才生成 `kind: behavior` observation。
+- 即使没有行为基础对象，同一次全图 VLM 请求也允许发现四类明显行为。
+- 最终行为固定为 `trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。
 
 当前明确未完成：
 
 - 真实 Qwen2.5-VL endpoint 联调与效果验证。
 - 请求级 10 秒 deadline；当前 provider 只有单次 HTTP 10 秒 timeout。
-- behavior 模型内部逻辑。
+- 多帧 behavior、tracking、pose 和区域关系增强。
 - TensorRT backend、正式 Thor engine 部署与 benchmark。
 - API、ROS2、stream、tracking 和并行执行。
 
 ## 验证状态
 
-- 自动测试：46 项通过。
+- 自动测试：64 项通过。
 - Python `compileall`：通过。
 - `git diff --check`：通过。
 - Qwen 请求测试使用 mock HTTP，确认发送完整图片 data URL 和 Detection Summary prompt，没有访问真实服务。

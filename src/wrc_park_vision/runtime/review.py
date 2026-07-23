@@ -7,7 +7,13 @@ from .schemas import DetectionSummary, ModuleSummary, Observation, ObservationRe
 from .vlm.base import ReviewProvider
 
 
-REASON_ORDER = ("low_confidence", "cross_model_overlap", "module_failure")
+REASON_ORDER = (
+    "low_confidence",
+    "cross_model_overlap",
+    "module_failure",
+    "behavior_candidate",
+    "behavior_full_image_scan",
+)
 
 
 class ReviewPolicy:
@@ -55,6 +61,19 @@ class ReviewCoordinator:
         detection_summary: DetectionSummary,
     ) -> tuple[list[Observation], ReviewSummary]:
         reviewed, summary = self.policy.apply(observations, modules)
+        behavior_reasons: list[str] = []
+        if detection_summary.behavior_candidates:
+            behavior_reasons.append("behavior_candidate")
+        if detection_summary.behavior_classes:
+            behavior_reasons.append("behavior_full_image_scan")
+        if behavior_reasons:
+            summary.required = True
+            summary.status = "pending"
+            summary.reasons = [
+                reason
+                for reason in REASON_ORDER
+                if reason in {*summary.reasons, *behavior_reasons}
+            ]
         if self.provider is None:
             return reviewed, summary
 
@@ -86,4 +105,5 @@ class ReviewCoordinator:
             duration_ms=result.duration_ms,
             decisions=result.decisions,
             findings=result.findings,
+            behaviors=result.behaviors,
         )

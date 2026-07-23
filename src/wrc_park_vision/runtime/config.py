@@ -12,10 +12,14 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 ENV_PATTERN = re.compile(r"\$(?:\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)\}|(?P<plain>[A-Za-z_][A-Za-z0-9_]*))")
-BEHAVIOR_ACTION_CLASS_NAMES = {
+BEHAVIOR_CLASS_NAMES = (
     "trampling_grass",
     "smoking",
     "blocking_fire_lane",
+    "standing_or_lying_on_bench",
+)
+BEHAVIOR_ACTION_CLASS_NAMES = {
+    *BEHAVIOR_CLASS_NAMES,
     "standing_on_bench",
     "lying_on_bench",
 }
@@ -147,6 +151,50 @@ class ReviewProviderSettings(BaseModel):
         return self
 
 
+class BehaviorClassSettings(BaseModel):
+    class_id: int = Field(ge=0)
+    class_name: Literal[
+        "trampling_grass",
+        "smoking",
+        "blocking_fire_lane",
+        "standing_or_lying_on_bench",
+    ]
+    required_object_classes: list[str] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_required_objects(self) -> "BehaviorClassSettings":
+        if any(not name.strip() for name in self.required_object_classes):
+            raise ValueError(f"behavior class {self.class_name} contains a blank required object")
+        if len(self.required_object_classes) != len(set(self.required_object_classes)):
+            raise ValueError(f"behavior class {self.class_name} contains duplicate required objects")
+        return self
+
+
+class BehaviorSettings(BaseModel):
+    enabled: bool = False
+    module_id: str = Field(default="behavior_pipeline", min_length=1)
+    task_group: Literal["uncivilized_behavior"] = "uncivilized_behavior"
+    object_task_group: str = Field(default="uncivilized_behavior", min_length=1)
+    classes: list[BehaviorClassSettings] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_classes(self) -> "BehaviorSettings":
+        if not self.enabled:
+            return self
+        if not self.module_id.strip() or not self.object_task_group.strip():
+            raise ValueError("enabled behavior pipeline requires non-blank module and object task groups")
+        names = [item.class_name for item in self.classes]
+        if names != list(BEHAVIOR_CLASS_NAMES):
+            raise ValueError(
+                "enabled behavior pipeline requires the four canonical classes in order: "
+                + ", ".join(BEHAVIOR_CLASS_NAMES)
+            )
+        class_ids = [item.class_id for item in self.classes]
+        if class_ids != list(range(len(BEHAVIOR_CLASS_NAMES))):
+            raise ValueError("behavior class IDs must be continuous from 0 in canonical order")
+        return self
+
+
 class PreviewSettings(BaseModel):
     enabled: bool = True
     task_group_colors: dict[str, str] = Field(
@@ -169,6 +217,7 @@ class PreviewSettings(BaseModel):
 class RuntimeConfig(BaseModel):
     runtime: RuntimeSettings = Field(default_factory=RuntimeSettings)
     modules: list[ModuleSettings]
+    behavior: BehaviorSettings = Field(default_factory=BehaviorSettings)
     review: ReviewSettings = Field(default_factory=ReviewSettings)
     preview: PreviewSettings = Field(default_factory=PreviewSettings)
 

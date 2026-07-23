@@ -5,7 +5,14 @@ from __future__ import annotations
 from collections import Counter
 
 from .config import ReviewSettings
-from .schemas import BBoxGeometry, DetectionSummary, DetectionSummaryItem, Observation
+from .schemas import (
+    BBoxGeometry,
+    BehaviorCandidate,
+    BehaviorClassSummary,
+    DetectionSummary,
+    DetectionSummaryItem,
+    Observation,
+)
 
 
 def observation_review_reasons(observation: Observation, settings: ReviewSettings) -> list[str]:
@@ -20,6 +27,8 @@ def observation_review_reasons(observation: Observation, settings: ReviewSetting
 def build_detection_summary(
     observations: list[Observation],
     settings: ReviewSettings,
+    behavior_classes: list[BehaviorClassSummary] | None = None,
+    behavior_candidates: list[BehaviorCandidate] | None = None,
 ) -> DetectionSummary:
     items: list[DetectionSummaryItem] = []
     for observation in observations:
@@ -43,4 +52,6 @@ def build_detection_summary(
         total_detections=len(items),
         counts_by_task_group=dict(sorted(counts.items())),
         detections=items,
+        behavior_classes=behavior_classes or [],
+        behavior_candidates=behavior_candidates or [],
     )

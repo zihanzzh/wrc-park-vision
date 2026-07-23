@@ -9,7 +9,13 @@ from PIL import Image
 from wrc_park_vision.runtime.config import PreviewSettings
 from wrc_park_vision.runtime.fusion import fuse_review_results, merge_and_mark_conflicts
 from wrc_park_vision.runtime.preview import render_preview
-from wrc_park_vision.runtime.schemas import ReviewSummary, VLMFinding, VLMReviewDecision
+from wrc_park_vision.runtime.schemas import (
+    Observation,
+    ObservationSource,
+    ReviewSummary,
+    VLMFinding,
+    VLMReviewDecision,
+)
 
 from .helpers import make_observation, make_response, write_test_image
 
@@ -64,6 +70,36 @@ class PreviewTests(unittest.TestCase):
                 self.assertEqual(rendered.width, 100)
                 self.assertGreater(rendered.height, 80)
             self.assertIsNone(response.review.findings[0].geometry)
+
+    def test_preview_lists_behavior_without_bbox(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = write_test_image(root / "source.png")
+            response = make_response([], image_path)
+            response.observations.append(
+                Observation(
+                    id="behavior-0001",
+                    kind="behavior",
+                    task_group="uncivilized_behavior",
+                    class_id=0,
+                    class_name="trampling_grass",
+                    confidence=0.81,
+                    source=ObservationSource(
+                        module_id="behavior_pipeline",
+                        backend="fake_qwen",
+                        model_id="fake-vl",
+                    ),
+                    evidence_observation_ids=[],
+                    reasoning="confirmed from the full image",
+                )
+            )
+            preview_path = root / "preview.jpg"
+
+            render_preview(image_path, response, preview_path, PreviewSettings())
+
+            with Image.open(preview_path) as rendered:
+                self.assertEqual(rendered.width, 100)
+                self.assertGreater(rendered.height, 80)
 
 
 if __name__ == "__main__":

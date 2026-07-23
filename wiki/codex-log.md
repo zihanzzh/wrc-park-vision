@@ -2,6 +2,25 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-07-23 单图 Behavior Pipeline 实现
+
+本次在现有 YOLO-World、Detection Summary、单次全图 Qwen Review 和 Fusion 链路上增量实现不文明行为处理，没有重写 detector Pipeline：
+
+- 新增配置化四类行为与候选规则：`trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。
+- `person + grass`、`person + cigarette`、`vehicle`、`person + bench` 只生成 behavior candidate，不直接产生行为。
+- Detection Summary 现在携带行为类别和 candidate；现有一次 Qwen 请求同时完成 YOLO review、漏检物体发现、candidate 判断和无 candidate 的全图行为扫描。
+- Response Parser 严格检查 candidate 覆盖、正式行为类别、evidence observation ID 和重复确认；VLM 不输出行为 bbox。
+- 只有 VLM `confirmed` 才生成无 geometry 的 `kind: behavior` observation，并保留 confidence、reasoning、evidence observation IDs 和 provider/model 来源。
+- Fusion 新增 `add_behavior` 决策；同一行为类别不会重复添加。Preview 继续显示已有基础对象 bbox，并在底部列出无 bbox 行为。
+- provider disabled、VLM timeout/failure 或 VLM 否定时不生成行为，原 detector observations 保持可用。
+- 更新 `runtime.example.yaml` 和 `runtime.yolo-world.example.yaml`；没有修改 gitignored 的 `runtime.local.yaml`。
+
+验证结果：
+
+- 64 项 `unittest` 全部通过，覆盖候选否定、行为确认、无基础对象全图发现、多物体与多行为、VLM failure、provider disabled、单次 provider 调用和原有检测/Fusion 回归。
+- `compileall` 通过；两个示例配置均可成功加载并恢复正式四类行为规则。
+- 本次没有运行真实 YOLO/Qwen、安装依赖、训练模型、commit 或 push。
+
 ## 2026-07-21 YOLO-World 儿童滑板车隔离 Smoke Test
 
 本次在新分支 `experiment/yolo-world-smoke` 创建独立脚本 `experiments/yolo_world_smoke.py`，使用 Ultralytics 官方 `YOLOWorld`、`yolov8s-worldv2.pt` 和 `set_classes()` 测试图片 `test_images/微信图片_20260701150103_465_41.jpg`。脚本及输出位于已被 `.gitignore` 忽略的 `experiments/`。

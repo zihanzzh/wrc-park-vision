@@ -74,18 +74,17 @@
 
 ## 不文明行为
 
-后续独立设计的行为目标包括：
+当前单图 Behavior Pipeline 的正式行为类别固定为：
 
 - `trampling_grass`：踩踏草坪。
 - `smoking`：吸烟。
 - `blocking_fire_lane`：占用消防通道。
-- `standing_on_bench`：站立在长椅上。
-- `lying_on_bench`：躺在长椅上。
+- `standing_or_lying_on_bench`：站立或躺在长椅上。
 
-这些名称是业务行为定义，不等价于可直接加入当前物品 detectors 的普通 object detection 类别。后续可能需要 `person`、`bench`、草坪/消防通道区域、pose、segmentation、tracking、规则层和 VLM 共同判断。
+这些名称是业务行为定义，不得直接加入 YOLO-World object classes。当前由 `person`、`grass`、`cigarette`、`vehicle`、`bench` 等基础对象生成 candidate，再由同一次全图 VLM Review 确认；正常坐在长椅上不属于违规。后续仍可能需要 pose、segmentation、tracking、区域规则和多帧信息增强判断。
 
 ## 辅助目标与负样本
 
-可能的辅助检测目标包括 `person`、`bench`、草坪区域和消防通道区域，是否进入模型待行为方案确认。
+当前 YOLO-World 行为基础对象包括 `person`、`bench`、`grass`、`cigarette` 和 `vehicle`。它们只提供行为证据，不直接等价于不文明行为。
 
 负样本应持续覆盖与禁带品或垃圾外观相似的普通物品，例如水杯、保温杯、普通饮料瓶、清洁剂瓶、普通金属罐、食品包装、背包、衣物、普通纸盒、玩具车、气罐和非目标炉具。负样本用于控制比赛中的误报风险，不应被当成额外正类。

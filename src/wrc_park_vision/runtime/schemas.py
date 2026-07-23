@@ -15,8 +15,9 @@ ModuleStatus = Literal["success", "failure"]
 ReviewStatus = Literal["not_required", "pending", "confirmed", "rejected"]
 ReviewExecutionStatus = Literal["not_required", "pending", "completed", "failed"]
 ReviewVerdict = Literal["confirmed", "rejected", "corrected", "uncertain"]
+BehaviorVerdict = Literal["confirmed", "rejected", "uncertain"]
 FusionStatus = Literal["not_run", "completed", "fallback"]
-FusionAction = Literal["keep_yolo", "reject_yolo", "correct_yolo", "add_vlm_finding"]
+FusionAction = Literal["keep_yolo", "reject_yolo", "correct_yolo", "add_vlm_finding", "add_behavior"]
 
 
 class BBoxGeometry(BaseModel):
@@ -119,14 +120,16 @@ class Conflict(BaseModel):
 
 class Observation(BaseModel):
     id: str = ""
-    kind: Literal["detection", "segmentation", "pose", "region", "relation"]
+    kind: Literal["detection", "segmentation", "pose", "region", "relation", "behavior"]
     task_group: str
     class_id: Optional[int] = None
     class_name: str
     confidence: float = Field(ge=0.0, le=1.0)
     source: ObservationSource
     track_id: Optional[str] = None
-    geometry: Geometry
+    geometry: Optional[Geometry] = None
+    evidence_observation_ids: list[str] = Field(default_factory=list)
+    reasoning: Optional[str] = None
     review: ObservationReview = Field(default_factory=ObservationReview)
     conflicts: list[Conflict] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -138,6 +141,8 @@ class Observation(BaseModel):
                 raise ValueError("detection observations require class_id")
             if not isinstance(self.geometry, BBoxGeometry):
                 raise ValueError("detection observations require bbox geometry")
+        elif self.kind != "behavior" and self.geometry is None:
+            raise ValueError(f"{self.kind} observations require geometry")
         return self
 
 
@@ -157,6 +162,23 @@ class DetectionSummary(BaseModel):
     total_detections: int = Field(ge=0)
     counts_by_task_group: dict[str, int] = Field(default_factory=dict)
     detections: list[DetectionSummaryItem] = Field(default_factory=list)
+    behavior_classes: list["BehaviorClassSummary"] = Field(default_factory=list)
+    behavior_candidates: list["BehaviorCandidate"] = Field(default_factory=list)
+
+
+class BehaviorClassSummary(BaseModel):
+    class_id: int = Field(ge=0)
+    class_name: str
+    required_object_classes: list[str] = Field(default_factory=list)
+
+
+class BehaviorCandidate(BaseModel):
+    id: str
+    task_group: Literal["uncivilized_behavior"] = "uncivilized_behavior"
+    class_id: int = Field(ge=0)
+    class_name: str
+    evidence_observation_ids: list[str] = Field(min_length=1)
+    evidence_class_names: list[str] = Field(min_length=1)
 
 
 class VLMReviewDecision(BaseModel):
@@ -187,12 +209,25 @@ class VLMFinding(BaseModel):
     geometry: None = None
 
 
+class VLMBehaviorDecision(BaseModel):
+    id: str
+    candidate_id: Optional[str] = None
+    task_group: Literal["uncivilized_behavior"] = "uncivilized_behavior"
+    class_id: int = Field(ge=0)
+    class_name: str
+    verdict: BehaviorVerdict
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    evidence_observation_ids: list[str] = Field(default_factory=list)
+    reasoning: Optional[str] = None
+
+
 class VLMReviewResult(BaseModel):
     provider: str
     model_id: str
     duration_ms: float = Field(ge=0.0)
     decisions: list[VLMReviewDecision] = Field(default_factory=list)
     findings: list[VLMFinding] = Field(default_factory=list)
+    behaviors: list[VLMBehaviorDecision] = Field(default_factory=list)
 
 
 class FusionDecision(BaseModel):
@@ -200,9 +235,11 @@ class FusionDecision(BaseModel):
     action: FusionAction
     observation_id: Optional[str] = None
     finding_id: Optional[str] = None
+    behavior_review_id: Optional[str] = None
     final_task_group: Optional[str] = None
     final_class_name: Optional[str] = None
     geometry_source: Literal["yolo", "none"]
+    evidence_observation_ids: list[str] = Field(default_factory=list)
     reasoning: Optional[str] = None
 
 
@@ -243,10 +280,11 @@ class ReviewSummary(BaseModel):
     duration_ms: Optional[float] = Field(default=None, ge=0.0)
     decisions: list[VLMReviewDecision] = Field(default_factory=list)
     findings: list[VLMFinding] = Field(default_factory=list)
+    behaviors: list[VLMBehaviorDecision] = Field(default_factory=list)
 
 
 class RuntimeErrorInfo(BaseModel):
-    stage: Literal["input", "module", "detection_summary", "fusion", "review", "output"]
+    stage: Literal["input", "module", "behavior", "detection_summary", "fusion", "review", "output"]
     code: str
     message: str
     module_id: Optional[str] = None

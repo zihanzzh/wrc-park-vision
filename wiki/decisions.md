@@ -186,6 +186,12 @@
 - 决策：新增 `yolo_world` backend，但不替换现有 YOLO11m。它可检测禁带品 8 类、垃圾 6 类和行为判断需要的基础物体，并将每条结果规范化为显式 `task_group`、组内 class ID 和 canonical class name。
 - 说明：YOLO-World 只负责 object-level detection。踩踏草坪、吸烟、占用消防通道、站立/躺在长椅等行为不作为其 class，后续由独立 Behavior Pipeline 处理。Qwen Review 继续接收统一 Detection Summary，无需 backend-specific 分支。
 
+### D032：单图行为复用现有一次全图 VLM Review
+
+- 日期：2026-07-23
+- 决策：正式行为类别固定为 `trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。YOLO-World 基础对象组合只生成 candidate，最终行为必须由现有同一次全图 VLM 请求确认。
+- 说明：每张图片最多调用一次 VLM，该响应同时处理 YOLO review、漏检物体和 behavior review/full-image scan。没有基础对象时仍允许发现明显行为；未确认、provider disabled 或 VLM 失败时不得生成行为 observation。
+
 ## 被替代的历史方案
 
 - 早期 YOLO11n 环境验证：已完成，仅保留历史意义。

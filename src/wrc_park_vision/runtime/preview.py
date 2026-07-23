@@ -33,6 +33,14 @@ def render_preview(
     }
     review_by_observation = {decision.observation_id: decision for decision in response.review.decisions}
     footer_lines: list[str] = []
+    for observation in response.observations:
+        if observation.kind != "behavior":
+            continue
+        confidence = f" ({observation.confidence:.2f})" if observation.confidence > 0 else ""
+        evidence = ",".join(observation.evidence_observation_ids) or "full-image"
+        footer_lines.append(
+            f"Behavior | {observation.class_name}{confidence} | evidence: {evidence} | no bbox"
+        )
     for finding in response.review.findings:
         confidence = f" ({finding.confidence:.2f})" if finding.confidence is not None else ""
         footer_lines.append(f"VLM-only | {finding.task_group} | {finding.class_name}{confidence} | no bbox")

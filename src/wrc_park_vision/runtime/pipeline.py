@@ -18,7 +18,7 @@ from .backends import (
 from .config import ModuleSettings, RuntimeConfig
 from .detection_summary import build_detection_summary
 from .fusion import fuse_review_results, merge_and_mark_conflicts, prepare_observations
-from .modules import BehaviorModule, DetectionModule, TaskModule
+from .modules import BehaviorModule, BehaviorPipeline, DetectionModule, TaskModule
 from .review import ReviewCoordinator, ReviewProvider
 from .schemas import (
     DetectionSummary,
@@ -146,6 +146,7 @@ class RuntimePipeline:
         review_provider: Optional[ReviewProvider] = None,
     ) -> None:
         self.config = config
+        self.behavior = BehaviorPipeline(config.behavior)
         self.modules = modules if modules is not None else build_modules(config)
         expected_ids = [settings.id for settings in config.modules if settings.enabled]
         actual_ids = [module.module_id for module in self.modules]
@@ -247,10 +248,28 @@ class RuntimePipeline:
             current_observations = prepare_observations(observations)
             postprocessing_failed = True
 
+        behavior_candidates = []
+        try:
+            behavior_candidates = self.behavior.generate_candidates(current_observations)
+        except Exception as exc:
+            errors.append(
+                RuntimeErrorInfo(
+                    stage="behavior",
+                    code="behavior_candidate_failure",
+                    message=str(exc) or exc.__class__.__name__,
+                )
+            )
+            postprocessing_failed = True
+
         summary_started = time.perf_counter()
         detection_summary: DetectionSummary | None = None
         try:
-            detection_summary = build_detection_summary(current_observations, self.config.review)
+            detection_summary = build_detection_summary(
+                current_observations,
+                self.config.review,
+                behavior_classes=self.behavior.class_summaries(),
+                behavior_candidates=behavior_candidates,
+            )
             detection_summary_duration = (time.perf_counter() - summary_started) * 1000.0
         except Exception as exc:
             errors.append(
@@ -291,12 +310,32 @@ class RuntimePipeline:
                 postprocessing_failed = True
         review_duration = (time.perf_counter() - review_started) * 1000.0
 
+        behavior_observations = []
+        try:
+            behavior_observations = self.behavior.build_observations(review_summary)
+        except Exception as exc:
+            errors.append(
+                RuntimeErrorInfo(
+                    stage="behavior",
+                    code="behavior_result_failure",
+                    message=str(exc) or exc.__class__.__name__,
+                )
+            )
+            postprocessing_failed = True
+
         fusion_started = time.perf_counter()
         try:
-            fused_observations, fusion_summary = fuse_review_results(reviewed, review_summary)
+            fused_observations, fusion_summary = fuse_review_results(
+                reviewed,
+                review_summary,
+                behavior_observations=behavior_observations,
+            )
         except Exception as exc:
             errors.append(RuntimeErrorInfo(stage="fusion", code="review_fusion_failure", message=str(exc)))
-            fused_observations = [observation.model_copy(deep=True) for observation in reviewed]
+            fused_observations = [
+                observation.model_copy(deep=True)
+                for observation in [*reviewed, *behavior_observations]
+            ]
             fusion_summary = FusionSummary(status="fallback")
             postprocessing_failed = True
         fusion_duration = (time.perf_counter() - fusion_started) * 1000.0

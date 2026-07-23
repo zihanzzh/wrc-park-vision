@@ -20,6 +20,8 @@ def bbox_iou(first: BBoxGeometry, second: BBoxGeometry) -> float:
 
 
 def _geometry_sort_key(observation: Observation) -> tuple[object, ...]:
+    if observation.geometry is None:
+        return ("",)
     if isinstance(observation.geometry, BBoxGeometry):
         return tuple(round(value, 6) for value in observation.geometry.bbox_xyxy)
     return (observation.geometry.model_dump_json(),)
@@ -71,8 +73,9 @@ def merge_and_mark_conflicts(observations: list[Observation], iou_threshold: flo
 def fuse_review_results(
     observations: list[Observation],
     review: ReviewSummary,
+    behavior_observations: list[Observation] | None = None,
 ) -> tuple[list[Observation], FusionSummary]:
-    """Preserve all YOLO observations and express semantic fusion as explicit decisions."""
+    """Preserve detector results and append explicit VLM-derived semantic results."""
     preserved = [observation.model_copy(deep=True) for observation in observations]
     review_by_id = {decision.observation_id: decision for decision in review.decisions}
     decisions: list[FusionDecision] = []
@@ -114,6 +117,23 @@ def fuse_review_results(
                 final_class_name=finding.class_name,
                 geometry_source="none",
                 reasoning=finding.reasoning,
+            )
+        )
+
+    for behavior in behavior_observations or []:
+        preserved_behavior = behavior.model_copy(deep=True)
+        preserved.append(preserved_behavior)
+        decisions.append(
+            FusionDecision(
+                id=f"fusion-{len(decisions) + 1:04d}",
+                action="add_behavior",
+                observation_id=preserved_behavior.id,
+                behavior_review_id=preserved_behavior.metadata.get("behavior_review_id"),
+                final_task_group=preserved_behavior.task_group,
+                final_class_name=preserved_behavior.class_name,
+                geometry_source="none" if preserved_behavior.geometry is None else "yolo",
+                evidence_observation_ids=list(preserved_behavior.evidence_observation_ids),
+                reasoning=preserved_behavior.reasoning,
             )
         )
 

@@ -272,6 +272,32 @@ review:
             with self.assertRaisesRegex(ConfigError, "endpoint and model_id"):
                 load_runtime_config(config_path, validate_model_paths=False)
 
+    def test_behavior_pipeline_requires_four_canonical_classes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "runtime.yaml"
+            config_path.write_text(
+                """
+modules:
+  - id: active
+    enabled: true
+    type: detection
+    task_group: garbage
+    backend: ultralytics
+    model_path: model.pt
+    model_id: active_model
+    expected_class_names: [bottle]
+behavior:
+  enabled: true
+  classes:
+    - class_id: 0
+      class_name: trampling_grass
+      required_object_classes: [person, grass]
+""",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "four canonical classes"):
+                load_runtime_config(config_path, validate_model_paths=False)
+
 
 if __name__ == "__main__":
     unittest.main()
