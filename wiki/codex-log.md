@@ -2,6 +2,24 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-07-23 Qwen2.5-VL-7B Prompt 稳定性与延迟优化
+
+Thor 实测确认 `Qwen2.5-VL-7B-Instruct-AWQ` 能返回内容，但会把旧 JSON 模板中的 `"允许的 task_group"` 原样复制，触发 `unknown VLM task_group`。本次保持单次全图 VLM 请求和现有 schema，不改变 Runtime 架构：
+
+- 移除 JSON 模板中的说明性占位值、管道式枚举值和中文填写提示。
+- Prompt 明确列出三个 task group、四类行为和 Runtime 对象类别目录。
+- 根据当前 Detection Summary 动态生成 parser 合法的最小 JSON 模板，使用真实 observation/candidate ID；默认 verdict 为 `uncertain`，`reasoning` 和 `confidence` 为 `null`。
+- Detection Summary、类别目录和模板改用紧凑 JSON，删除重复解释，并明确禁止 Markdown、代码围栏、定位字段和长篇 reasoning。
+- Parser 只对 observation ID、candidate ID、task group、class name 和 evidence ID 做首尾空格清理，继续严格拒绝非法类别和占位文本。
+- Qwen provider 捕获 Parser 错误后附加最长 512 字符、压缩换行的 `raw_response_excerpt`；Pipeline 继续通过原有 `review_failure` 降级路径记录错误。
+
+验证结果：
+
+- Prompt/Review/Behavior/Pipeline/Fusion 专项 33 项测试通过。
+- 全部 Runtime `unittest` 67 项通过。
+- `compileall` 和 `git diff --check` 通过。
+- 本次没有调用真实模型、修改配置模型名、安装依赖、commit 或 push；Thor 7B 修复后实测待执行。
+
 ## 2026-07-23 单图 Behavior Pipeline 实现
 
 本次在现有 YOLO-World、Detection Summary、单次全图 Qwen Review 和 Fusion 链路上增量实现不文明行为处理，没有重写 detector Pipeline：

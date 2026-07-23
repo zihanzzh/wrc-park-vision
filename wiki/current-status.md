@@ -6,6 +6,15 @@
 
 本轮已完成代码实现与 mock 自动测试，没有运行真实 Qwen2.5-VL、训练模型、修改数据集、安装依赖或 push。
 
+## Qwen2.5-VL-7B Prompt 优化
+
+- Thor 上的 `Qwen2.5-VL-7B-Instruct-AWQ` 已能被 Runtime 成功调用，但旧 Prompt 中的 `"允许的 task_group"` 被 7B 原样复制，导致严格 Parser 拒绝响应。
+- Prompt 已改为紧凑规则、明确枚举和基于本次 observation/candidate 动态生成的合法 JSON 模板，不再把说明文字放入 JSON 字段值。
+- `reasoning` 默认建议为 `null`，必要时只允许极短句，以减少输出 token。
+- Parser 仍严格拒绝非法业务类别，只新增标识符首尾空格清理。
+- Provider 在解析失败时会把最长 512 字符的 VLM 原始响应摘录附加到错误信息，便于 Thor 调试，不改变成功路径。
+- 单次全图 VLM 请求架构保持不变；Thor 7B 修复后实测延迟和稳定性仍待复测。
+
 ## YOLO-World 隔离实验
 
 - 2026-07-21 在分支 `experiment/yolo-world-smoke` 完成单图 YOLO-World v2 smoke test。
@@ -56,12 +65,12 @@
 
 ## 验证状态
 
-- 自动测试：64 项通过。
+- 自动测试：67 项通过。
 - Python `compileall`：通过。
 - `git diff --check`：通过。
 - Qwen 请求测试使用 mock HTTP，确认发送完整图片 data URL 和 Detection Summary prompt，没有访问真实服务。
 - detector 实际运行：macOS 与 NVIDIA Thor 已跑通。
-- VLM 实际运行：尚未执行。
+- VLM 实际运行：Thor 7B 请求已成功到达并返回内容；旧 Prompt 导致解析失败，修复后待复测。
 - 10 秒完整链路：尚未实测。
 
 ## 数据与设备边界
@@ -78,3 +87,4 @@
 3. 人工核对 confirm / reject / correct / VLM-only finding，以及 JSON 与 Preview 一致性。
 4. 测量 detector、Review、Fusion 和完整请求耗时，验证 10 秒超时与降级策略。
 5. 根据真实响应稳定性调整 prompt、parser 容错边界和比赛动作策略。
+6. 在 Thor 上复测 7B 的合法 JSON 成功率、首 token/总耗时和截断响应诊断信息。

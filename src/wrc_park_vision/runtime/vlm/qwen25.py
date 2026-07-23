@@ -18,6 +18,16 @@ from .parser import ReviewResponseError, parse_review_response
 from .prompt import build_review_prompt
 
 
+RAW_RESPONSE_EXCERPT_LIMIT = 512
+
+
+def _raw_response_excerpt(content: str) -> str:
+    compact = " ".join(content.split())
+    if len(compact) <= RAW_RESPONSE_EXCERPT_LIMIT:
+        return compact
+    return compact[:RAW_RESPONSE_EXCERPT_LIMIT] + "..."
+
+
 class Qwen25VLProvider(ReviewProvider):
     """Call a configured Qwen2.5-VL endpoint with the complete decoded image."""
 
@@ -85,7 +95,13 @@ class Qwen25VLProvider(ReviewProvider):
         except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise RuntimeError(f"Qwen2.5-VL review request failed: {exc}") from exc
         content = self._response_content(payload)
-        decisions, findings, behaviors = parse_review_response(content, summary, self.class_catalog)
+        try:
+            decisions, findings, behaviors = parse_review_response(content, summary, self.class_catalog)
+        except ReviewResponseError as exc:
+            excerpt = _raw_response_excerpt(content)
+            raise ReviewResponseError(
+                f"{exc}; raw_response_excerpt={excerpt!r}"
+            ) from exc
         return VLMReviewResult(
             provider="qwen2_5_vl",
             model_id=self.settings.model_id,

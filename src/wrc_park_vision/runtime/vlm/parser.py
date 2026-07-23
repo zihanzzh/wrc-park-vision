@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from ..schemas import DetectionSummary, VLMBehaviorDecision, VLMFinding, VLMReviewDecision
 
@@ -23,6 +23,16 @@ class _RawDecision(BaseModel):
     corrected_class_name: Optional[str] = None
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     reasoning: Optional[str] = None
+
+    @field_validator("observation_id", mode="before")
+    @classmethod
+    def strip_observation_id(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("corrected_task_group", "corrected_class_name", mode="before")
+    @classmethod
+    def strip_optional_identifiers(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def validate_correction(self) -> "_RawDecision":
@@ -43,6 +53,11 @@ class _RawFinding(BaseModel):
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     reasoning: Optional[str] = None
 
+    @field_validator("task_group", "class_name", mode="before")
+    @classmethod
+    def strip_identifiers(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
 
 class _RawBehaviorDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -53,6 +68,18 @@ class _RawBehaviorDecision(BaseModel):
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     evidence_observation_ids: list[str] = Field(default_factory=list)
     reasoning: Optional[str] = None
+
+    @field_validator("candidate_id", "class_name", mode="before")
+    @classmethod
+    def strip_identifiers(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("evidence_observation_ids", mode="before")
+    @classmethod
+    def strip_evidence_ids(cls, value: object) -> object:
+        if isinstance(value, list):
+            return [item.strip() if isinstance(item, str) else item for item in value]
+        return value
 
 
 class _RawResponse(BaseModel):
