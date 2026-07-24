@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -44,6 +45,7 @@ def write_runtime_outputs(
     can_render = response.input.width > 0 and response.input.height > 0
     if preview_enabled and preview_settings.enabled and can_render:
         candidate = request_dir / "preview.jpg"
+        preview_started = time.perf_counter()
         try:
             render_preview(Path(response.input.image_path), response, candidate, preview_settings)
             preview_path = candidate
@@ -55,8 +57,11 @@ def write_runtime_outputs(
                     message=str(exc) or exc.__class__.__name__,
                 )
             )
-            # Rewrite JSON so the preview failure is recorded without losing inference results.
+        finally:
+            preview_duration = (time.perf_counter() - preview_started) * 1000.0
+            response.timing_ms.preview = preview_duration
+            response.timing_ms.total += preview_duration
+            # Persist output-stage timing and any preview failure without losing inference results.
             write_json(response, json_path)
 
     return OutputArtifacts(directory=request_dir, json_path=json_path, preview_path=preview_path)
-

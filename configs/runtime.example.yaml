@@ -136,8 +136,21 @@ review:
   cross_model_iou_threshold: 0.75
   review_cross_task_overlap: true
   review_module_failure: true
-  uncertain_policy: keep_flagged
-  review_failure_policy: keep_flagged
+  require_finding_bbox: true
+  full_image:
+    enabled: true
+    timeout_seconds: 5
+    max_tokens: 1200
+  crop_scan:
+    enabled: true
+    timeout_seconds: 5
+    max_tokens: 700
+    overlap: 0.20
+    aspect_ratio_threshold: 1.4
+    square_rows: 2
+    square_columns: 2
+    wide_columns: 3
+    tall_rows: 3
   provider:
     enabled: false
     type: qwen2_5_vl
@@ -147,6 +160,11 @@ review:
     timeout_seconds: 10
     max_tokens: 1200
     temperature: 0
+
+fusion:
+  finding_iou_threshold: 0.65
+  uncertain_policy: keep_flagged
+  review_failure_policy: keep_flagged
 
 preview:
   enabled: true

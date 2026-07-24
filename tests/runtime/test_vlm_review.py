@@ -6,12 +6,14 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from wrc_park_vision.runtime.config import ReviewProviderSettings
+from wrc_park_vision.runtime.config import ReviewProviderSettings, ReviewSettings
+from wrc_park_vision.runtime.crops import generate_crops
 from wrc_park_vision.runtime.schemas import (
     BehaviorCandidate,
     BehaviorClassSummary,
     DetectionSummary,
     DetectionSummaryItem,
+    ReviewSummary,
     ValidatedImage,
 )
 from wrc_park_vision.runtime.vlm.parser import ReviewResponseError, parse_review_response
@@ -229,9 +231,80 @@ class VLMReviewTests(unittest.TestCase):
         parsed = parse_review_response(content, make_summary(), CATALOG)
         self.assertEqual(parsed.decisions[0].verdict, "corrected")
         self.assertEqual(parsed.decisions[0].corrected_class_id, 1)
-        self.assertEqual(parsed.findings[0].id, "vlm-0001")
+        self.assertEqual(parsed.findings[0].id, "vlm-full-0001")
         self.assertIsNone(parsed.findings[0].geometry)
         self.assertEqual(parsed.behaviors, [])
+
+    def test_invalid_finding_bbox_only_drops_that_item(self) -> None:
+        content = json.dumps(
+            {
+                "yolo_reviews": [{"observation_id": "obs-0001", "verdict": "confirmed"}],
+                "new_findings": [
+                    {
+                        "task_group": "garbage",
+                        "class_name": "plastic_drink_bottle",
+                        "confidence": 0.8,
+                        "bbox_normalized_xyxy": [0.2, 0.2, 0.1, 0.5],
+                        "review_pass": "full_image",
+                        "geometry_source": "vlm_full_image",
+                    },
+                    {
+                        "task_group": "garbage",
+                        "class_name": "plastic_drink_bottle",
+                        "confidence": 0.7,
+                        "bbox_normalized_xyxy": [-0.1, 0.1, 1.1, 0.9],
+                        "review_pass": "full_image",
+                        "geometry_source": "vlm_full_image",
+                    },
+                ],
+                "behavior_reviews": [],
+            }
+        )
+
+        parsed = parse_review_response(
+            content,
+            make_summary(),
+            CATALOG,
+            require_finding_bbox=True,
+        )
+
+        self.assertEqual(len(parsed.findings), 1)
+        self.assertEqual(parsed.findings[0].bbox_normalized_xyxy, (0.0, 0.1, 1.0, 0.9))
+        self.assertEqual(parsed.findings[0].review_pass, "full_image")
+        self.assertEqual(parsed.issues[0].section, "new_findings")
+
+    def test_crop_scan_uses_shared_parser_and_requires_known_crop(self) -> None:
+        content = json.dumps(
+            {
+                "yolo_reviews": [],
+                "new_findings": [
+                    {
+                        "task_group": "prohibited_items",
+                        "class_name": "speaker",
+                        "confidence": 0.65,
+                        "bbox_normalized_xyxy": [0.1, 0.2, 0.8, 0.9],
+                        "crop_id": "crop-r1-c2",
+                        "review_pass": "crop_scan",
+                        "geometry_source": "vlm_crop",
+                    }
+                ],
+                "behavior_reviews": [],
+            }
+        )
+
+        parsed = parse_review_response(
+            content,
+            make_summary(),
+            CATALOG,
+            review_pass="crop_scan",
+            require_finding_bbox=True,
+            valid_crop_ids={"crop-r1-c2"},
+        )
+
+        self.assertEqual(parsed.decisions, [])
+        self.assertEqual(parsed.findings[0].crop_id, "crop-r1-c2")
+        self.assertEqual(parsed.findings[0].geometry_source, "vlm_crop")
+        self.assertEqual(parsed.issues, [])
 
     def test_parser_handles_candidate_review_and_full_image_behavior(self) -> None:
         summary = make_summary().model_copy(
@@ -464,6 +537,115 @@ class VLMReviewTests(unittest.TestCase):
         self.assertEqual(captured["calls"], 1)
         self.assertEqual(captured["timeout"], 10.0)
         self.assertEqual(result.decisions[0].verdict, "confirmed")
+
+    def test_qwen_uses_distinct_prompts_and_one_request_for_all_crops(self) -> None:
+        settings = ReviewProviderSettings(
+            enabled=True,
+            endpoint="http://localhost:8000/v1/chat/completions",
+            model_id="Qwen2.5-VL",
+        )
+        review_settings = ReviewSettings()
+        provider = Qwen25VLProvider(
+            settings,
+            CATALOG,
+            review_settings=review_settings,
+        )
+        image = ValidatedImage(
+            "image.jpg",
+            Image.new("RGB", (100, 100), "white"),
+            100,
+            100,
+        )
+        crops = generate_crops(image, review_settings.crop_scan)
+        responses = [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "yolo_reviews": [
+                                        {
+                                            "observation_id": "obs-0001",
+                                            "verdict": "confirmed",
+                                        }
+                                    ],
+                                    "new_findings": [],
+                                    "behavior_reviews": [],
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "yolo_reviews": [],
+                                    "new_findings": [
+                                        {
+                                            "task_group": "garbage",
+                                            "class_name": "plastic_drink_bottle",
+                                            "confidence": 0.7,
+                                            "bbox_normalized_xyxy": [0.1, 0.1, 0.8, 0.8],
+                                            "crop_id": crops[0].crop_id,
+                                            "review_pass": "crop_scan",
+                                            "geometry_source": "vlm_crop",
+                                        }
+                                    ],
+                                    "behavior_reviews": [],
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        ]
+        captured_bodies = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(self.payload).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            captured_bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(responses[len(captured_bodies) - 1])
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            full_result = provider.review(image, make_summary())
+            crop_result = provider.review_crops(
+                crops,
+                image,
+                make_summary(),
+                ReviewSummary(
+                    attempted=True,
+                    status="completed",
+                    decisions=full_result.decisions,
+                ),
+            )
+
+        self.assertEqual(len(captured_bodies), 2)
+        full_content = captured_bodies[0]["messages"][0]["content"]
+        crop_content = captured_bodies[1]["messages"][0]["content"]
+        self.assertIn("检查完整图片", full_content[1]["text"])
+        self.assertIn("独立的重叠分块漏检扫描", crop_content[0]["text"])
+        self.assertNotEqual(full_content[1]["text"], crop_content[0]["text"])
+        crop_images = [item for item in crop_content if item["type"] == "image_url"]
+        self.assertEqual(len(crop_images), len(crops))
+        self.assertEqual(crop_result.review_pass, "crop_scan")
+        self.assertEqual(crop_result.findings[0].crop_id, crops[0].crop_id)
 
     def test_qwen_parser_error_contains_truncated_raw_response(self) -> None:
         settings = ReviewProviderSettings(

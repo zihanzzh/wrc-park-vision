@@ -234,7 +234,9 @@ class BehaviorPipelineTests(unittest.TestCase):
                 VLMFinding(
                     id="vlm-0001",
                     task_group="garbage",
+                    class_id=0,
                     class_name="plastic_drink_bottle",
+                    bbox_normalized_xyxy=(0.6, 0.1, 0.8, 0.4),
                 )
             ],
         )

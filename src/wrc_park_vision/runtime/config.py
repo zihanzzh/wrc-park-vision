@@ -139,11 +139,31 @@ class ModuleSettings(BaseModel):
         return self
 
 
+class ReviewPassSettings(BaseModel):
+    enabled: bool = True
+    timeout_seconds: Optional[float] = Field(default=None, gt=0.0)
+    max_tokens: Optional[int] = Field(default=None, gt=0)
+
+
+class CropScanSettings(ReviewPassSettings):
+    timeout_seconds: Optional[float] = Field(default=5.0, gt=0.0)
+    max_tokens: Optional[int] = Field(default=700, gt=0)
+    overlap: float = Field(default=0.20, ge=0.0, lt=1.0)
+    aspect_ratio_threshold: float = Field(default=1.4, gt=1.0)
+    square_rows: int = Field(default=2, gt=0)
+    square_columns: int = Field(default=2, gt=0)
+    wide_columns: int = Field(default=3, gt=0)
+    tall_rows: int = Field(default=3, gt=0)
+
+
 class ReviewSettings(BaseModel):
     low_confidence_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
     cross_model_iou_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
     review_cross_task_overlap: bool = True
     review_module_failure: bool = True
+    require_finding_bbox: bool = True
+    full_image: ReviewPassSettings = Field(default_factory=ReviewPassSettings)
+    crop_scan: CropScanSettings = Field(default_factory=CropScanSettings)
     uncertain_policy: Literal["keep_flagged", "drop"] = "keep_flagged"
     review_failure_policy: Literal["keep_flagged", "drop_review_required"] = "keep_flagged"
     provider: "ReviewProviderSettings" = Field(default_factory=lambda: ReviewProviderSettings())
@@ -164,6 +184,12 @@ class ReviewProviderSettings(BaseModel):
         if self.enabled and (not self.endpoint or not self.model_id):
             raise ValueError("enabled review provider requires endpoint and model_id")
         return self
+
+
+class FusionSettings(BaseModel):
+    finding_iou_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
+    uncertain_policy: Literal["keep_flagged", "drop"] = "keep_flagged"
+    review_failure_policy: Literal["keep_flagged", "drop_review_required"] = "keep_flagged"
 
 
 class BehaviorClassSettings(BaseModel):
@@ -234,7 +260,25 @@ class RuntimeConfig(BaseModel):
     modules: list[ModuleSettings]
     behavior: BehaviorSettings = Field(default_factory=BehaviorSettings)
     review: ReviewSettings = Field(default_factory=ReviewSettings)
+    fusion: FusionSettings = Field(default_factory=FusionSettings)
     preview: PreviewSettings = Field(default_factory=PreviewSettings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_fusion_policies(cls, value: object) -> object:
+        if not isinstance(value, dict) or "fusion" in value:
+            return value
+        migrated = dict(value)
+        review = migrated.get("review")
+        fusion: dict[str, object] = {}
+        if isinstance(review, dict):
+            if "uncertain_policy" in review:
+                fusion["uncertain_policy"] = review["uncertain_policy"]
+            if "review_failure_policy" in review:
+                fusion["review_failure_policy"] = review["review_failure_policy"]
+        if fusion:
+            migrated["fusion"] = fusion
+        return migrated
 
     @model_validator(mode="after")
     def validate_modules(self) -> "RuntimeConfig":

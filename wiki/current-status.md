@@ -6,13 +6,23 @@
 
 本轮已完成代码实现与 mock 自动测试，没有运行真实 Qwen2.5-VL、训练模型、修改数据集、安装依赖或 push。
 
+## Runtime Dual Pass 最终阶段
+
+- Qwen provider 启用时默认固定执行两次互补请求：Pass 1 检查完整原图并处理 YOLO review、明显漏检与行为；Pass 2 在一次请求中接收全部重叠 crops，独立扫描小目标。
+- crop 策略由 Pipeline 与 YAML 决定：近方图默认 2x2，宽图默认 3 个横向 crop，高图默认 3 个纵向 crop，重叠率默认 20%。
+- Full Image finding 与 Crop finding 都必须提供 normalized bbox；Pipeline 映射为完整原图 geometry，VLM 不修改 corrected YOLO bbox。
+- Fusion 跨 YOLO、Pass 1、Pass 2 做同类 IoU 去重并保留来源追踪；不同类别高 IoU 结果继续双方保留并标记冲突。
+- Preview 直接绘制最终 observations，并标注 detector、VLM corrected、VLM full image、VLM crop、uncertain 或 review failed。
+- 两个 Pass 的 timeout、`max_tokens`、crop 参数、finding IoU 阈值和降级策略均配置化；旧配置仍可加载。
+- 双 Pass 真实 Thor 延迟和准确率尚未测试，10 秒目标仍需实测。
+
 ## Detection Module 分工 Phase 2
 
 - 单帧 Runtime 保持现有多模块 Pipeline，不重写主流程：同一图片依次进入 YOLO-World object module 和独立 garbage YOLO11m module，输出统一合并为 observations / Detection Summary。
 - YOLO-World 现在只负责正式 8 类禁带品和 `person`、`bench`、`grass`、`cigarette`、`vehicle` 五类行为辅助对象；配置与 backend 均明确拒绝 `task_group: garbage`。
 - 六类垃圾固定由现有 Ultralytics backend 加载 `garbage_best.pt`。权重元数据已核对为 `crumpled_paper_ball`、`disposable_food_container`、`empty_cigarette_box`、`plastic_drink_bottle`、`plastic_food_wrapper`、`rigid_takeout_bag`，顺序为 ID 0 至 5。
 - example 配置表达正式 8 类禁带品；gitignored 的 `runtime.yolo-world.local.yaml` 暂时只启用已验证的 6 类禁带品，并明确保留 `roller_skates`、`barbecue_grill` 的正式定义待后续补齐。
-- 本阶段未修改 Dual Pass、Crop Scan、VLM finding bbox、Preview、Parser/Fusion 语义、TensorRT、权重、数据集或训练代码。
+- Phase 2 当时未修改 Dual Pass、Crop Scan 和 Preview；这些剩余能力现已在最终阶段完成。
 
 ## Runtime Review/Fusion Phase 1
 
@@ -22,7 +32,7 @@
 - 没有确认行为时 `behavior_reviews: []` 是合法结果；无 candidate 的条目只有明确 `confirmed` 才可接受。
 - Final Fusion 现在对最终 observations 应用语义：`confirmed` 保留，`corrected` 复用原 YOLO bbox 和 confidence 并更新类别，`rejected` 移除，`uncertain` 默认保留并标记。
 - FusionDecision 同时记录 YOLO confidence 与 VLM confidence；Review 整体失败或单条缺失审核时默认 `keep_flagged`，不会静默当作 confirmed。
-- 本阶段没有修改 detection modules、Pipeline 主流程、Preview、Crop 或双 Pass；VLM finding 仍没有 bbox。
+- Phase 1 当时没有修改 Pipeline、Preview、Crop 或双 Pass；这些剩余能力现已在最终阶段完成。
 
 ## Qwen2.5-VL-7B 视觉类别指南
 
@@ -59,8 +69,10 @@
   -> YOLO-World prohibited_items / behavior object detection
   -> Ultralytics YOLO11m garbage detection
   -> Detection Summary + behavior candidates
-  -> 一次可选 Qwen2.5-VL 全图 Review
-  -> object review + missed objects + behavior review/full-image scan
+  -> 可选 Qwen2.5-VL Pass 1：全图 object/behavior review + 明显漏检
+  -> Pipeline 生成重叠 crops
+  -> 可选 Qwen2.5-VL Pass 2：一次请求扫描全部 crops
+  -> finding bbox 映射与跨来源去重
   -> Final Fusion
   -> PipelineResponse
   -> result.json / preview.jpg
@@ -74,10 +86,10 @@
 - Detection Summary，向 VLM 提供 YOLO 语义上下文，但不限制 VLM 的全图观察范围。
 - Qwen2.5-VL provider interface、OpenAI-compatible HTTP provider、Prompt Builder 和逐项容错 Response Parser。
 - VLM 可以确认、拒绝或纠正 YOLO 类别，也可以报告 YOLO 完全漏检的目标。
-- VLM 不承担定位，不允许返回 bbox；VLM-only finding 的 `geometry` 为 `null`。
+- corrected 不由 VLM 重新定位；VLM 新 finding 必须提供 normalized bbox，最终 geometry 由 Pipeline 生成。
 - Final Fusion 根据 VLM verdict 形成最终 observations，同时在 Detection Summary、Review 和 FusionDecision 中保留可审计的原始检测与双置信度信息。
 - Review 或 Fusion 失败时保留 detector 结果，并返回阶段错误和 `partial_success`。
-- JSON 与 Preview 使用同一个最终 `PipelineResponse`；VLM-only finding 只在预览信息区显示，不绘制推测框。
+- JSON 与 Preview 使用同一个最终 `PipelineResponse`；有 geometry 的 VLM finding 作为正式 observation 绘框。
 - Qwen provider 默认关闭，detector-only 配置继续保持可用。
 - Behavior Pipeline 根据配置化关系生成候选：`person + grass`、`person + cigarette`、`vehicle`、`person + bench`。
 - candidate 不会直接成为行为；只有 VLM `confirmed` 才生成 `kind: behavior` observation。
@@ -87,17 +99,17 @@
 当前明确未完成：
 
 - 三类任务的真实 Qwen2.5-VL 系统效果验证。
-- 请求级 10 秒 deadline；当前 provider 只有单次 HTTP 10 秒 timeout。
+- 请求级 10 秒 deadline；当前只有两个 Pass 各自的 HTTP timeout，没有跨阶段共享 deadline。
 - 多帧 behavior、tracking、pose 和区域关系增强。
 - TensorRT backend、正式 Thor engine 部署与 benchmark。
 - API、ROS2、stream、tracking 和并行执行。
 
 ## 验证状态
 
-- 自动测试：83 项通过（Phase 2 完成后）。
+- 自动测试：104 项 Runtime `unittest` 通过。
 - Python `compileall`：通过。
 - `git diff --check`：通过。
-- Qwen 请求测试使用 mock HTTP，确认发送完整图片 data URL 和 Detection Summary prompt，没有访问真实服务。
+- 本轮双 Pass 请求测试使用 mock HTTP，确认 Pass 1 发送完整图片、Pass 2 在一次请求中发送全部 crops；本轮没有访问真实服务。
 - detector 实际运行：macOS 与 NVIDIA Thor 已跑通。
 - VLM 实际运行：Thor 7B 已完成单次全图 Review 并返回合法 JSON；当前需要复测配置驱动视觉指南的分类准确率。
 - 10 秒完整链路：尚未实测。
@@ -113,6 +125,6 @@
 
 1. 在 Thor 上用固定验收图片复测 `skateboard` / `kick_scooter` 等相似类别，记录视觉指南启用前后的准确率与耗时。
 2. 对 8 类禁带品、6 类垃圾和四类不文明行为执行系统真实图片测试。
-3. 人工核对 confirm / reject / correct / VLM-only finding，以及 JSON 与 Preview 一致性。
-4. 持续测量 detector、Review、Fusion 和完整请求耗时，验证 10 秒超时与降级策略。
+3. 人工核对 confirm / reject / correct、Full Image finding、Crop finding，以及 JSON 与 Preview 一致性。
+4. 分别测量 detector、Full Image Review、crop 生成、Crop Scan Review、Fusion、Preview 和完整请求耗时，验证 10 秒目标。
 5. 根据真实响应稳定性微调配置中的视觉定义，不放宽 Parser 的业务类别边界。

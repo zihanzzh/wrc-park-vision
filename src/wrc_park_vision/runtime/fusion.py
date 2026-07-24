@@ -2,7 +2,15 @@
 
 from __future__ import annotations
 
-from .schemas import BBoxGeometry, Conflict, FusionDecision, FusionSummary, Observation, ReviewSummary
+from .schemas import (
+    BBoxGeometry,
+    Conflict,
+    FusionDecision,
+    FusionSummary,
+    Observation,
+    ObservationSource,
+    ReviewSummary,
+)
 
 
 def bbox_iou(first: BBoxGeometry, second: BBoxGeometry) -> float:
@@ -70,10 +78,47 @@ def merge_and_mark_conflicts(observations: list[Observation], iou_threshold: flo
     return merged
 
 
+def _review_priority(observation: Observation) -> int:
+    if observation.review.status == "confirmed":
+        return 3
+    if observation.source.module_id == "vlm_review":
+        return 2
+    return 1
+
+
+def _source_trace(observation: Observation) -> dict[str, object]:
+    return {
+        "observation_id": observation.id,
+        "module_id": observation.source.module_id,
+        "backend": observation.source.backend,
+        "model_id": observation.source.model_id,
+        "confidence": observation.confidence,
+        "geometry_source": observation.metadata.get("geometry_source", "yolo"),
+        "review_pass": observation.metadata.get("review_pass"),
+        "crop_id": observation.metadata.get("crop_id"),
+    }
+
+
+def _merge_source_trace(target: Observation, duplicate: Observation) -> None:
+    sources = target.metadata.setdefault("merged_sources", [])
+    if not isinstance(sources, list):
+        sources = []
+        target.metadata["merged_sources"] = sources
+    sources.append(_source_trace(duplicate))
+
+
+def _add_conflict(first: Observation, second: Observation) -> None:
+    if not any(item.observation_id == second.id for item in first.conflicts):
+        first.conflicts.append(Conflict(observation_id=second.id))
+    if not any(item.observation_id == first.id for item in second.conflicts):
+        second.conflicts.append(Conflict(observation_id=first.id))
+
+
 def fuse_review_results(
     observations: list[Observation],
     review: ReviewSummary,
     behavior_observations: list[Observation] | None = None,
+    finding_iou_threshold: float = 0.65,
 ) -> tuple[list[Observation], FusionSummary]:
     """Apply semantic review decisions while preserving detector geometry and confidence."""
     finalized: list[Observation] = []
@@ -104,6 +149,8 @@ def fuse_review_results(
                 observation.task_group = review_decision.corrected_task_group
                 observation.class_id = review_decision.corrected_class_id
                 observation.class_name = review_decision.corrected_class_name
+                observation.metadata["review_source"] = "vlm_corrected"
+                observation.metadata["geometry_source"] = "yolo"
                 final_task_group = review_decision.corrected_task_group
                 final_class_name = review_decision.corrected_class_name
             elif review_decision.verdict == "uncertain":
@@ -149,15 +196,105 @@ def fuse_review_results(
             )
         )
 
+    next_observation_index = len(observations) + 1
     for finding in review.findings:
+        if finding.geometry is None or finding.class_id is None:
+            decisions.append(
+                FusionDecision(
+                    id=f"fusion-{len(decisions) + 1:04d}",
+                    action="add_vlm_finding",
+                    finding_id=finding.id,
+                    final_task_group=finding.task_group,
+                    final_class_name=finding.class_name,
+                    geometry_source="none",
+                    vlm_confidence=finding.confidence,
+                    reasoning=finding.reasoning,
+                )
+            )
+            continue
+
+        candidate = Observation(
+            id=f"obs-{next_observation_index:04d}",
+            kind="detection",
+            task_group=finding.task_group,
+            class_id=finding.class_id,
+            class_name=finding.class_name,
+            confidence=finding.confidence if finding.confidence is not None else 0.0,
+            source=ObservationSource(
+                module_id="vlm_review",
+                backend=review.provider or "vlm",
+                model_id=review.model_id or "unknown",
+            ),
+            geometry=finding.geometry,
+            reasoning=finding.reasoning,
+            metadata={
+                "finding_id": finding.id,
+                "geometry_source": finding.geometry_source,
+                "review_pass": finding.review_pass,
+                "crop_id": finding.crop_id,
+                "vlm_confidence": finding.confidence,
+            },
+        )
+        next_observation_index += 1
+        duplicate_index = next(
+            (
+                index
+                for index, existing in enumerate(finalized)
+                if existing.task_group == candidate.task_group
+                and existing.class_name == candidate.class_name
+                and isinstance(existing.geometry, BBoxGeometry)
+                and bbox_iou(existing.geometry, finding.geometry) >= finding_iou_threshold
+            ),
+            None,
+        )
+        if duplicate_index is None:
+            finalized.append(candidate)
+            decisions.append(
+                FusionDecision(
+                    id=f"fusion-{len(decisions) + 1:04d}",
+                    action="add_vlm_finding",
+                    observation_id=candidate.id,
+                    finding_id=finding.id,
+                    final_task_group=finding.task_group,
+                    final_class_name=finding.class_name,
+                    geometry_source=finding.geometry_source,
+                    vlm_confidence=finding.confidence,
+                    reasoning=finding.reasoning,
+                )
+            )
+            continue
+
+        existing = finalized[duplicate_index]
+        candidate_wins = (
+            _review_priority(candidate) > _review_priority(existing)
+            or (
+                _review_priority(candidate) == _review_priority(existing)
+                and candidate.confidence > existing.confidence
+            )
+        )
+        if candidate_wins:
+            candidate.id = existing.id
+            candidate.conflicts = list(existing.conflicts)
+            _merge_source_trace(candidate, existing)
+            finalized[duplicate_index] = candidate
+            kept = candidate
+        else:
+            _merge_source_trace(existing, candidate)
+            kept = existing
         decisions.append(
             FusionDecision(
                 id=f"fusion-{len(decisions) + 1:04d}",
-                action="add_vlm_finding",
+                action="merge_duplicate",
+                observation_id=kept.id,
                 finding_id=finding.id,
-                final_task_group=finding.task_group,
-                final_class_name=finding.class_name,
-                geometry_source="none",
+                final_task_group=kept.task_group,
+                final_class_name=kept.class_name,
+                geometry_source=kept.metadata.get("geometry_source", "yolo"),
+                yolo_confidence=(
+                    kept.confidence
+                    if kept.source.module_id != "vlm_review"
+                    else None
+                ),
                 vlm_confidence=finding.confidence,
                 reasoning=finding.reasoning,
             )
@@ -180,4 +317,35 @@ def fuse_review_results(
             )
         )
 
+    boxed = [
+        observation
+        for observation in finalized
+        if isinstance(observation.geometry, BBoxGeometry)
+    ]
+    for index, first in enumerate(boxed):
+        for second in boxed[index + 1 :]:
+            if (
+                first.task_group == second.task_group
+                and first.class_name == second.class_name
+            ):
+                continue
+            if bbox_iou(first.geometry, second.geometry) < finding_iou_threshold:
+                continue
+            _add_conflict(first, second)
+            decisions.append(
+                FusionDecision(
+                    id=f"fusion-{len(decisions) + 1:04d}",
+                    action="mark_cross_source_conflict",
+                    observation_id=first.id,
+                    original_task_group=first.task_group,
+                    original_class_name=first.class_name,
+                    final_task_group=second.task_group,
+                    final_class_name=second.class_name,
+                    geometry_source=first.metadata.get("geometry_source", "yolo"),
+                    reasoning=f"high IoU conflict with {second.id}",
+                )
+            )
+
+    for observation in finalized:
+        observation.conflicts.sort(key=lambda item: item.observation_id)
     return finalized, FusionSummary(status="completed", decisions=decisions)

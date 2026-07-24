@@ -13,6 +13,26 @@ from .helpers import make_observation, make_response, write_test_image
 
 
 class OutputTests(unittest.TestCase):
+    def test_successful_preview_timing_is_persisted_to_json(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = write_test_image(root / "image.jpg")
+            response = make_response([], image_path)
+            initial_total = response.timing_ms.total
+
+            artifacts = write_runtime_outputs(
+                response,
+                root / "outputs",
+                PreviewSettings(),
+                True,
+            )
+
+            payload = json.loads(artifacts.json_path.read_text(encoding="utf-8"))
+
+        self.assertIsNotNone(artifacts.preview_path)
+        self.assertIsNotNone(payload["timing_ms"]["preview"])
+        self.assertGreaterEqual(payload["timing_ms"]["total"], initial_total)
+
     def test_preview_failure_keeps_json_and_observations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -34,6 +54,7 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(len(payload["observations"]), 1)
         self.assertEqual(payload["observations"][0]["class_name"], "plastic_bottle")
         self.assertEqual(payload["errors"][-1]["code"], "preview_failure")
+        self.assertIsNotNone(payload["timing_ms"]["preview"])
 
 
 if __name__ == "__main__":

@@ -282,7 +282,7 @@ class PipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             image_path = write_test_image(Path(directory) / "image.jpg")
             response = RuntimePipeline(make_config(("prohibited", "garbage")), modules).process(image_path)
-        self.assertEqual(response.status, "failure")
+        self.assertEqual(response.status, "failed")
         self.assertEqual(response.observations, [])
         self.assertEqual(len(response.errors), 2)
 
@@ -290,7 +290,7 @@ class PipelineTests(unittest.TestCase):
         backend = FakeBackend("unused")
         module = DetectionModule("garbage", "garbage", "unused", backend)
         response = RuntimePipeline(make_config(("garbage",)), [module]).process(Path("missing-image.jpg"))
-        self.assertEqual(response.status, "failure")
+        self.assertEqual(response.status, "failed")
         self.assertEqual(response.errors[0].stage, "input")
         self.assertEqual(backend.predict_calls, 0)
 
@@ -356,8 +356,10 @@ class PipelineTests(unittest.TestCase):
                         VLMFinding(
                             id="vlm-0001",
                             task_group="prohibited",
+                            class_id=0,
                             class_name="prohibited_class",
                             reasoning="missed object in full image",
+                            bbox_normalized_xyxy=(0.6, 0.1, 0.8, 0.3),
                         )
                     ],
                 )
@@ -382,7 +384,208 @@ class PipelineTests(unittest.TestCase):
             [decision.action for decision in response.fusion.decisions],
             ["correct_yolo", "add_vlm_finding"],
         )
-        self.assertEqual(response.fusion.decisions[1].geometry_source, "none")
+        self.assertEqual(
+            response.fusion.decisions[1].geometry_source,
+            "vlm_full_image",
+        )
+
+    def test_dual_pass_runs_once_per_pass_and_maps_both_finding_sources(self) -> None:
+        class DualPassProvider(ReviewProvider):
+            supports_crop_scan = True
+            provider_name = "fake_vlm"
+            model_id = "fake-vl"
+
+            def __init__(self) -> None:
+                self.full_calls = 0
+                self.crop_calls = 0
+                self.full_image_size = None
+                self.crops = []
+
+            def review(self, image: ValidatedImage, summary: DetectionSummary) -> VLMReviewResult:
+                self.full_calls += 1
+                self.full_image_size = image.image.size
+                return VLMReviewResult(
+                    provider=self.provider_name,
+                    model_id=self.model_id,
+                    duration_ms=2,
+                    review_pass="full_image",
+                    decisions=[
+                        VLMReviewDecision(
+                            observation_id=item.observation_id,
+                            verdict="confirmed",
+                        )
+                        for item in summary.detections
+                    ],
+                    findings=[
+                        VLMFinding(
+                            id="vlm-full-0001",
+                            task_group="garbage",
+                            class_id=0,
+                            class_name="paper",
+                            confidence=0.8,
+                            bbox_normalized_xyxy=(0.7, 0.1, 0.9, 0.3),
+                        )
+                    ],
+                )
+
+            def review_crops(self, crops, image, summary, full_image_review):
+                self.crop_calls += 1
+                self.crops = crops
+                return VLMReviewResult(
+                    provider=self.provider_name,
+                    model_id=self.model_id,
+                    duration_ms=3,
+                    review_pass="crop_scan",
+                    findings=[
+                        VLMFinding(
+                            id="vlm-crop-0001",
+                            task_group="prohibited",
+                            class_id=0,
+                            class_name="prohibited_class",
+                            confidence=0.75,
+                            bbox_normalized_xyxy=(0.0, 0.6, 0.3, 0.9),
+                            crop_id=crops[0].crop_id,
+                            review_pass="crop_scan",
+                            geometry_source="vlm_crop",
+                        )
+                    ],
+                )
+
+        provider = DualPassProvider()
+        backend = FakeBackend(
+            "good",
+            [BackendDetection(0, "prohibited_class", 0.9, (10, 10, 30, 40))],
+        )
+        module = DetectionModule("prohibited", "prohibited", "good", backend)
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = write_test_image(Path(directory) / "image.jpg", size=(100, 80))
+            response = RuntimePipeline(
+                make_config(("prohibited",)),
+                [module],
+                review_provider=provider,
+            ).process(image_path)
+
+        self.assertEqual(provider.full_calls, 1)
+        self.assertEqual(provider.crop_calls, 1)
+        self.assertEqual(provider.full_image_size, (100, 80))
+        self.assertGreater(len(provider.crops), 1)
+        self.assertTrue(all(crop.image.size == (crop.width, crop.height) for crop in provider.crops))
+        self.assertEqual(
+            [item.pass_id for item in response.review.passes],
+            ["full_image", "crop_scan"],
+        )
+        self.assertEqual(
+            {item.metadata.get("geometry_source") for item in response.observations},
+            {None, "vlm_full_image", "vlm_crop"},
+        )
+        self.assertIsNotNone(response.timing_ms.full_image_review)
+        self.assertIsNotNone(response.timing_ms.crop_generation)
+        self.assertIsNotNone(response.timing_ms.crop_scan_review)
+
+    def test_crop_scan_timeout_returns_partial_success_with_full_image_result(self) -> None:
+        class CropTimeoutProvider(ReviewProvider):
+            supports_crop_scan = True
+            provider_name = "fake_vlm"
+            model_id = "fake-vl"
+
+            def review(self, image: ValidatedImage, summary: DetectionSummary) -> VLMReviewResult:
+                return VLMReviewResult(
+                    provider=self.provider_name,
+                    model_id=self.model_id,
+                    duration_ms=1,
+                    decisions=[
+                        VLMReviewDecision(
+                            observation_id=item.observation_id,
+                            verdict="confirmed",
+                        )
+                        for item in summary.detections
+                    ],
+                )
+
+            def review_crops(self, crops, image, summary, full_image_review):
+                raise TimeoutError("crop scan timed out")
+
+        backend = FakeBackend(
+            "good",
+            [BackendDetection(0, "prohibited_class", 0.9, (10, 10, 30, 40))],
+        )
+        module = DetectionModule("prohibited", "prohibited", "good", backend)
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = write_test_image(Path(directory) / "image.jpg")
+            response = RuntimePipeline(
+                make_config(("prohibited",)),
+                [module],
+                review_provider=CropTimeoutProvider(),
+            ).process(image_path)
+
+        self.assertEqual(response.status, "partial_success")
+        self.assertEqual(len(response.observations), 1)
+        self.assertEqual(response.review.passes[0].status, "completed")
+        self.assertEqual(response.review.passes[1].status, "failed")
+        self.assertTrue(
+            any(error.code == "crop_scan_review_failure" for error in response.errors)
+        )
+
+    def test_crop_scan_still_runs_when_full_image_review_fails(self) -> None:
+        class FullImageFailureProvider(ReviewProvider):
+            supports_crop_scan = True
+            provider_name = "fake_vlm"
+            model_id = "fake-vl"
+
+            def __init__(self) -> None:
+                self.crop_calls = 0
+
+            def review(self, image: ValidatedImage, summary: DetectionSummary) -> VLMReviewResult:
+                raise TimeoutError("full-image review timed out")
+
+            def review_crops(self, crops, image, summary, full_image_review):
+                self.crop_calls += 1
+                return VLMReviewResult(
+                    provider=self.provider_name,
+                    model_id=self.model_id,
+                    duration_ms=2,
+                    review_pass="crop_scan",
+                    findings=[
+                        VLMFinding(
+                            id="vlm-crop-0001",
+                            task_group="garbage",
+                            class_id=0,
+                            class_name="paper",
+                            confidence=0.8,
+                            bbox_normalized_xyxy=(0.1, 0.1, 0.7, 0.7),
+                            crop_id=crops[0].crop_id,
+                            review_pass="crop_scan",
+                            geometry_source="vlm_crop",
+                        )
+                    ],
+                )
+
+        provider = FullImageFailureProvider()
+        backend = FakeBackend(
+            "good",
+            [BackendDetection(0, "prohibited_class", 0.9, (10, 10, 30, 40))],
+        )
+        module = DetectionModule("prohibited", "prohibited", "good", backend)
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = write_test_image(Path(directory) / "image.jpg")
+            response = RuntimePipeline(
+                make_config(("prohibited",)),
+                [module],
+                review_provider=provider,
+            ).process(image_path)
+
+        self.assertEqual(provider.crop_calls, 1)
+        self.assertEqual(response.status, "partial_success")
+        self.assertEqual(
+            [item.status for item in response.review.passes],
+            ["failed", "completed"],
+        )
+        self.assertTrue(
+            any(
+                item.metadata.get("geometry_source") == "vlm_crop"
+                for item in response.observations
+            )
+        )
 
     def test_initialization_failure_closes_previously_loaded_modules(self) -> None:
         first_backend = FakeBackend("first", close_error=RuntimeError("close also broke"))

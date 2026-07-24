@@ -112,7 +112,7 @@
 ### D019：Runtime v1 顺序执行并隔离模块失败
 
 - 日期：2026-07-18
-- 决策：当前只支持 sequential；所有模块成功为 `success`，部分成功为 `partial_success`，输入无效或全部模块失败为 `failure`。
+- 决策：当前只支持 sequential；所有模块成功为 `success`，部分成功为 `partial_success`，输入无效或全部模块失败现输出 `failed`。schema 继续接受历史值 `failure`。
 - 说明：单个模块失败不得丢弃其他成功模块的 observation；当前只记录耗时，不实现强制 timeout。
 
 ### D020：跨任务冲突保留双方结果
@@ -166,7 +166,7 @@
 
 - 日期：2026-07-20
 - 决策：VLM 只提供语义理解，不输出或修正 bbox、mask、polygon、pose 等定位信息。
-- 说明：VLM-only finding 可以没有 geometry；Response Parser 应拒绝 VLM 返回定位字段。
+- 说明：本决策中“VLM 不输出新 finding bbox”的部分已被 D036 替代；corrected 继续严格复用 YOLO bbox。
 
 ### D029：Fusion 必须保留所有来源的可审计信息
 
@@ -190,7 +190,7 @@
 
 - 日期：2026-07-23
 - 决策：正式行为类别固定为 `trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。YOLO-World 基础对象组合只生成 candidate，最终行为必须由现有同一次全图 VLM 请求确认。
-- 说明：每张图片最多调用一次 VLM，该响应同时处理 YOLO review、漏检物体和 behavior review/full-image scan。没有基础对象时仍允许发现明显行为；未确认、provider disabled 或 VLM 失败时不得生成行为 observation。
+- 说明：行为仍只由 Full Image Pass 判断；“每张图片最多一次 VLM”已被 D036 的双 Pass 方案替代。没有基础对象时仍允许 Full Image Pass 发现明显行为。
 
 ### D033：VLM Response 使用逐项容错解析
 
@@ -210,6 +210,24 @@
 - 决策：六类垃圾只由独立 Ultralytics YOLO11m detection module 负责；YOLO-World 配置和 backend 都拒绝 `task_group: garbage`。
 - 说明：garbage 模型路径、`expected_class_names`、confidence、IoU、imgsz 和 device 均由 YAML 配置。启动时使用真实权重元数据严格校验数量、名称与顺序，不允许缺失或不匹配时回退到 YOLO-World。
 - 类别真源：当前 `garbage_best.pt` 已核对为 `crumpled_paper_ball`、`disposable_food_container`、`empty_cigarette_box`、`plastic_drink_bottle`、`plastic_food_wrapper`、`rigid_takeout_bag`，与 [[class-list]] 一致。
+
+### D036：单帧 Review 固定使用 Full Image 与 Crop Scan 双 Pass
+
+- 日期：2026-07-23
+- 决策：Qwen provider 启用且两个 Pass 均开启时，每张图片固定执行两次请求。Pass 1 接收完整原图，负责 YOLO review、明显漏检和行为；Pass 2 在一次请求中接收全部重叠 crops，只做独立漏检扫描。
+- 说明：两个 Pass 使用不同 Prompt，但共享同一 Response Schema 和逐项容错 Parser。Pass 2 不依赖 Pass 1 是否成功或发现目标。
+
+### D037：VLM 新 finding 必须携带 normalized bbox
+
+- 日期：2026-07-23
+- 决策：Full Image finding 返回原图 normalized bbox；Crop finding 返回 `crop_id` 与 crop 内 normalized bbox。Pipeline 负责校验、裁剪和映射为完整原图 geometry。
+- 说明：VLM 不得修改 YOLO detection 的 bbox；corrected 继续复用原框。单条非法 bbox 只丢弃该 finding 并记录 `ReviewIssue`。
+
+### D038：跨来源 finding 使用配置化 IoU 去重
+
+- 日期：2026-07-23
+- 决策：YOLO、Full Image finding 和 Crop finding 的同 task/class 高 IoU 结果合并，默认阈值 0.65；保留经过确认或置信度更高的结果及来源追踪。
+- 说明：不同类别高 IoU 结果不能静默删除，双方保留并记录 conflict / fusion decision。Preview 只绘制最终 observations 中的同一份 geometry。
 
 ## 被替代的历史方案
 

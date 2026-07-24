@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 
 from wrc_park_vision.runtime.fusion import bbox_iou, fuse_review_results, merge_and_mark_conflicts
-from wrc_park_vision.runtime.schemas import ReviewSummary, VLMFinding, VLMReviewDecision
+from wrc_park_vision.runtime.schemas import (
+    BBoxGeometry,
+    ReviewSummary,
+    VLMFinding,
+    VLMReviewDecision,
+)
 
 from .helpers import make_observation
 
@@ -174,6 +179,168 @@ class FusionTests(unittest.TestCase):
         self.assertEqual(finalized[0].review.status, "pending")
         self.assertIn("review_item_missing_or_failed", finalized[0].review.reasons)
         self.assertEqual(fusion.decisions[0].action, "keep_review_failed")
+
+    def test_full_image_finding_creates_final_observation(self) -> None:
+        geometry = BBoxGeometry.from_xyxy((20, 10, 60, 50), 100, 80)
+        review = ReviewSummary(
+            attempted=True,
+            status="completed",
+            provider="qwen2_5_vl",
+            model_id="qwen-vl",
+            findings=[
+                VLMFinding(
+                    id="vlm-full-0001",
+                    task_group="garbage",
+                    class_id=3,
+                    class_name="plastic_drink_bottle",
+                    confidence=0.81,
+                    bbox_normalized_xyxy=geometry.bbox_normalized_xyxy,
+                    geometry=geometry,
+                )
+            ],
+        )
+
+        finalized, fusion = fuse_review_results([], review)
+
+        self.assertEqual(len(finalized), 1)
+        self.assertEqual(finalized[0].source.module_id, "vlm_review")
+        self.assertEqual(finalized[0].geometry, geometry)
+        self.assertEqual(finalized[0].metadata["geometry_source"], "vlm_full_image")
+        self.assertEqual(fusion.decisions[0].action, "add_vlm_finding")
+
+    def test_overlapping_crop_findings_are_deduplicated(self) -> None:
+        first = BBoxGeometry.from_xyxy((20, 10, 60, 50), 100, 80)
+        second = BBoxGeometry.from_xyxy((21, 11, 61, 51), 100, 80)
+        review = ReviewSummary(
+            attempted=True,
+            status="completed",
+            provider="qwen2_5_vl",
+            model_id="qwen-vl",
+            findings=[
+                VLMFinding(
+                    id="vlm-crop-0001",
+                    task_group="prohibited_items",
+                    class_id=5,
+                    class_name="speaker",
+                    confidence=0.7,
+                    bbox_normalized_xyxy=(0.1, 0.1, 0.8, 0.8),
+                    crop_id="crop-r1-c1",
+                    review_pass="crop_scan",
+                    geometry_source="vlm_crop",
+                    geometry=first,
+                ),
+                VLMFinding(
+                    id="vlm-crop-0002",
+                    task_group="prohibited_items",
+                    class_id=5,
+                    class_name="speaker",
+                    confidence=0.8,
+                    bbox_normalized_xyxy=(0.1, 0.1, 0.8, 0.8),
+                    crop_id="crop-r1-c2",
+                    review_pass="crop_scan",
+                    geometry_source="vlm_crop",
+                    geometry=second,
+                ),
+            ],
+        )
+
+        finalized, fusion = fuse_review_results([], review, finding_iou_threshold=0.65)
+
+        self.assertEqual(len(finalized), 1)
+        self.assertEqual(finalized[0].confidence, 0.8)
+        self.assertEqual(finalized[0].metadata["crop_id"], "crop-r1-c2")
+        self.assertEqual([item.action for item in fusion.decisions], [
+            "add_vlm_finding",
+            "merge_duplicate",
+        ])
+
+    def test_yolo_and_vlm_same_class_are_deduplicated(self) -> None:
+        observations = merge_and_mark_conflicts(
+            [
+                make_observation(
+                    "garbage",
+                    "garbage",
+                    3,
+                    "plastic_drink_bottle",
+                    0.9,
+                    (20, 10, 60, 50),
+                )
+            ],
+            0.75,
+        )
+        observations[0].review.status = "confirmed"
+        geometry = BBoxGeometry.from_xyxy((21, 11, 61, 51), 100, 80)
+        review = ReviewSummary(
+            attempted=True,
+            status="completed",
+            provider="qwen2_5_vl",
+            model_id="qwen-vl",
+            decisions=[
+                VLMReviewDecision(
+                    observation_id="obs-0001",
+                    verdict="confirmed",
+                    confidence=0.92,
+                )
+            ],
+            findings=[
+                VLMFinding(
+                    id="vlm-full-0001",
+                    task_group="garbage",
+                    class_id=3,
+                    class_name="plastic_drink_bottle",
+                    confidence=0.95,
+                    bbox_normalized_xyxy=geometry.bbox_normalized_xyxy,
+                    geometry=geometry,
+                )
+            ],
+        )
+
+        finalized, fusion = fuse_review_results(observations, review)
+
+        self.assertEqual(len(finalized), 1)
+        self.assertEqual(finalized[0].source.module_id, "garbage")
+        self.assertEqual(len(finalized[0].metadata["merged_sources"]), 1)
+        self.assertEqual(fusion.decisions[-1].action, "merge_duplicate")
+
+    def test_different_classes_with_high_iou_are_preserved_and_marked(self) -> None:
+        first = BBoxGeometry.from_xyxy((20, 10, 60, 50), 100, 80)
+        second = BBoxGeometry.from_xyxy((21, 11, 61, 51), 100, 80)
+        review = ReviewSummary(
+            attempted=True,
+            status="completed",
+            provider="qwen2_5_vl",
+            model_id="qwen-vl",
+            findings=[
+                VLMFinding(
+                    id="vlm-full-0001",
+                    task_group="prohibited_items",
+                    class_id=5,
+                    class_name="speaker",
+                    confidence=0.8,
+                    bbox_normalized_xyxy=first.bbox_normalized_xyxy,
+                    geometry=first,
+                ),
+                VLMFinding(
+                    id="vlm-full-0002",
+                    task_group="prohibited_items",
+                    class_id=2,
+                    class_name="megaphone",
+                    confidence=0.75,
+                    bbox_normalized_xyxy=second.bbox_normalized_xyxy,
+                    geometry=second,
+                ),
+            ],
+        )
+
+        finalized, fusion = fuse_review_results([], review)
+
+        self.assertEqual(len(finalized), 2)
+        self.assertEqual(len(finalized[0].conflicts), 1)
+        self.assertEqual(len(finalized[1].conflicts), 1)
+        self.assertIn(
+            "mark_cross_source_conflict",
+            [item.action for item in fusion.decisions],
+        )
 
 
 if __name__ == "__main__":

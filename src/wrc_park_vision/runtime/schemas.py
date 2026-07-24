@@ -10,12 +10,14 @@ from pydantic import BaseModel, Field, model_validator
 
 
 Float4 = tuple[float, float, float, float]
-PipelineStatus = Literal["success", "partial_success", "failure"]
+PipelineStatus = Literal["success", "partial_success", "failed", "failure"]
 ModuleStatus = Literal["success", "failure"]
 ReviewStatus = Literal["not_required", "pending", "confirmed", "rejected"]
 ReviewExecutionStatus = Literal["not_required", "pending", "completed", "failed"]
 ReviewVerdict = Literal["confirmed", "rejected", "corrected", "uncertain"]
 BehaviorVerdict = Literal["confirmed", "rejected", "uncertain"]
+ReviewPassId = Literal["full_image", "crop_scan"]
+FindingGeometrySource = Literal["vlm_full_image", "vlm_crop"]
 FusionStatus = Literal["not_run", "completed", "fallback"]
 FusionAction = Literal[
     "keep_yolo",
@@ -26,6 +28,8 @@ FusionAction = Literal[
     "reject_yolo",
     "correct_yolo",
     "add_vlm_finding",
+    "merge_duplicate",
+    "mark_cross_source_conflict",
     "add_behavior",
 ]
 
@@ -225,10 +229,38 @@ class VLMReviewDecision(BaseModel):
 class VLMFinding(BaseModel):
     id: str
     task_group: str
+    class_id: Optional[int] = Field(default=None, ge=0)
     class_name: str
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     reasoning: Optional[str] = None
-    geometry: None = None
+    bbox_normalized_xyxy: Optional[Float4] = None
+    crop_id: Optional[str] = None
+    review_pass: ReviewPassId = "full_image"
+    geometry_source: FindingGeometrySource = "vlm_full_image"
+    geometry: Optional[BBoxGeometry] = None
+
+    @model_validator(mode="after")
+    def validate_finding_geometry(self) -> "VLMFinding":
+        if self.bbox_normalized_xyxy is not None:
+            values = tuple(float(value) for value in self.bbox_normalized_xyxy)
+            if not all(math.isfinite(value) for value in values):
+                raise ValueError("finding bbox coordinates must be finite")
+            clipped = tuple(min(max(value, 0.0), 1.0) for value in values)
+            x1, y1, x2, y2 = clipped
+            if x2 <= x1 or y2 <= y1:
+                raise ValueError("finding bbox must have positive width and height after clipping")
+            self.bbox_normalized_xyxy = clipped
+        if self.review_pass == "full_image":
+            if self.crop_id is not None:
+                raise ValueError("full-image finding must not include crop_id")
+            if self.geometry_source != "vlm_full_image":
+                raise ValueError("full-image finding requires geometry_source=vlm_full_image")
+        else:
+            if not self.crop_id:
+                raise ValueError("crop-scan finding requires crop_id")
+            if self.geometry_source != "vlm_crop":
+                raise ValueError("crop-scan finding requires geometry_source=vlm_crop")
+        return self
 
 
 class VLMBehaviorDecision(BaseModel):
@@ -250,6 +282,8 @@ class ReviewIssue(BaseModel):
     message: str
     observation_id: Optional[str] = None
     candidate_id: Optional[str] = None
+    crop_id: Optional[str] = None
+    review_pass: Optional[ReviewPassId] = None
 
 
 class ParsedReviewResponse(BaseModel):
@@ -263,6 +297,7 @@ class VLMReviewResult(BaseModel):
     provider: str
     model_id: str
     duration_ms: float = Field(ge=0.0)
+    review_pass: ReviewPassId = "full_image"
     decisions: list[VLMReviewDecision] = Field(default_factory=list)
     findings: list[VLMFinding] = Field(default_factory=list)
     behaviors: list[VLMBehaviorDecision] = Field(default_factory=list)
@@ -279,7 +314,7 @@ class FusionDecision(BaseModel):
     original_class_name: Optional[str] = None
     final_task_group: Optional[str] = None
     final_class_name: Optional[str] = None
-    geometry_source: Literal["yolo", "none"]
+    geometry_source: Literal["yolo", "vlm_full_image", "vlm_crop", "none"]
     yolo_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     vlm_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     evidence_observation_ids: list[str] = Field(default_factory=list)
@@ -325,12 +360,35 @@ class ReviewSummary(BaseModel):
     findings: list[VLMFinding] = Field(default_factory=list)
     behaviors: list[VLMBehaviorDecision] = Field(default_factory=list)
     issues: list[ReviewIssue] = Field(default_factory=list)
+    passes: list["ReviewPassSummary"] = Field(default_factory=list)
     uncertain_policy: Literal["keep_flagged", "drop"] = "keep_flagged"
     review_failure_policy: Literal["keep_flagged", "drop_review_required"] = "keep_flagged"
 
 
+class ReviewPassSummary(BaseModel):
+    pass_id: ReviewPassId
+    enabled: bool = True
+    attempted: bool = False
+    status: ReviewExecutionStatus = "not_required"
+    duration_ms: Optional[float] = Field(default=None, ge=0.0)
+    finding_count: int = Field(default=0, ge=0)
+    issue_count: int = Field(default=0, ge=0)
+    error: Optional[str] = None
+
+
 class RuntimeErrorInfo(BaseModel):
-    stage: Literal["input", "module", "behavior", "detection_summary", "fusion", "review", "output"]
+    stage: Literal[
+        "input",
+        "module",
+        "behavior",
+        "detection_summary",
+        "fusion",
+        "review",
+        "full_image_review",
+        "crop_generation",
+        "crop_scan_review",
+        "output",
+    ]
     code: str
     message: str
     module_id: Optional[str] = None
@@ -338,9 +396,14 @@ class RuntimeErrorInfo(BaseModel):
 
 class TimingInfo(BaseModel):
     total: float = Field(ge=0.0)
+    detection: Optional[float] = Field(default=None, ge=0.0)
     detection_summary: Optional[float] = Field(default=None, ge=0.0)
     review: Optional[float] = Field(default=None, ge=0.0)
+    full_image_review: Optional[float] = Field(default=None, ge=0.0)
+    crop_generation: Optional[float] = Field(default=None, ge=0.0)
+    crop_scan_review: Optional[float] = Field(default=None, ge=0.0)
     fusion: Optional[float] = Field(default=None, ge=0.0)
+    preview: Optional[float] = Field(default=None, ge=0.0)
 
 
 class PipelineResponse(BaseModel):

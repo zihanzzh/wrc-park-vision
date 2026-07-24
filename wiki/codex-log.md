@@ -2,6 +2,25 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-07-23 Runtime Dual Pass / Crop Scan 最终阶段
+
+本阶段在 Phase 1 Review/Fusion 与 Phase 2 Detection Module 分工之上完成单帧 Runtime 剩余整合，没有修改 detector backend 推理、模型、数据集、训练、TensorRT 或多帧逻辑：
+
+- 新增配置化 `crops.py`：近方图 2x2、宽图 3 个横向、竖图 3 个纵向重叠 crops，并保存原图坐标、尺寸和 crop image。
+- Qwen provider 使用同一服务固定执行 Full Image 与 Crop Scan 两次互补请求；第二次请求一次发送全部 crops，不按 crop 单独调用。
+- 两个 Prompt 共享 `yolo_reviews`、`new_findings`、`behavior_reviews` Schema 和同一逐项容错 Parser。
+- Full Image finding 与 Crop finding 支持 normalized bbox；Pipeline 完成原图坐标映射，corrected 继续复用 YOLO bbox。
+- Fusion 跨 YOLO、Pass 1、Pass 2 做同类 IoU 去重、来源追踪和异类冲突保留。
+- Preview 直接绘制最终 observations，并显示 detector / corrected / full-image / crop / flagged 来源状态；输出 JSON 记录 Preview 耗时。
+- example 与 gitignored local 配置增加双 Pass、crop strategy、finding bbox、IoU 去重和降级策略。
+- 双 Pass 的 Thor 实际准确率与 10 秒总预算尚未验证。
+
+验证结果：
+
+- 全部 Runtime `unittest` 104 项通过。
+- `compileall` 与 `git diff --check` 通过。
+- 本次没有下载或运行真实模型、安装依赖、修改权重/数据集、commit 或 push。
+
 ## 2026-07-23 Detection Module 分工 Phase 2
 
 本阶段只整理单帧 Runtime 的 detection modules 与配置，没有进入 Dual Pass、Crop Scan、VLM finding bbox、Preview、TensorRT、训练或部署：

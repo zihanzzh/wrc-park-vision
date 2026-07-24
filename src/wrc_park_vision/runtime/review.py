@@ -3,7 +3,16 @@
 from __future__ import annotations
 
 from .config import ReviewSettings
-from .schemas import DetectionSummary, ModuleSummary, Observation, ObservationReview, ReviewSummary, ValidatedImage
+from .schemas import (
+    DetectionSummary,
+    ModuleSummary,
+    Observation,
+    ObservationReview,
+    ReviewPassSummary,
+    ReviewSummary,
+    VLMReviewResult,
+    ValidatedImage,
+)
 from .vlm.base import ReviewProvider
 
 
@@ -59,9 +68,8 @@ class ReviewCoordinator:
         self.policy = ReviewPolicy(settings)
         self.provider = provider
 
-    def apply(
+    def prepare(
         self,
-        image: ValidatedImage,
         observations: list[Observation],
         modules: list[ModuleSummary],
         detection_summary: DetectionSummary,
@@ -80,39 +88,81 @@ class ReviewCoordinator:
                 for reason in REASON_ORDER
                 if reason in {*summary.reasons, *behavior_reasons}
             ]
+        return reviewed, summary
+
+    def apply_result(
+        self,
+        reviewed: list[Observation],
+        summary: ReviewSummary,
+        result: VLMReviewResult,
+        *,
+        include_object_reviews: bool,
+        include_behavior_reviews: bool,
+    ) -> tuple[list[Observation], ReviewSummary]:
+        merged = summary.model_copy(deep=True)
+        if include_object_reviews:
+            decisions_by_id = {
+                decision.observation_id: decision
+                for decision in result.decisions
+            }
+            for observation in reviewed:
+                decision = decisions_by_id.get(observation.id)
+                if decision is None:
+                    continue
+                if decision.verdict == "confirmed":
+                    observation.review.status = "confirmed"
+                elif decision.verdict == "rejected":
+                    observation.review.status = "rejected"
+                elif decision.verdict == "corrected":
+                    observation.review.status = "confirmed"
+                else:
+                    observation.review.status = "pending"
+                observation.review.required = True
+                reason = f"{result.review_pass}_vlm_review"
+                if reason not in observation.review.reasons:
+                    observation.review.reasons.append(reason)
+
+        merged.required = True
+        merged.attempted = True
+        merged.status = "completed"
+        merged.provider = result.provider
+        merged.model_id = result.model_id
+        merged.duration_ms = (merged.duration_ms or 0.0) + result.duration_ms
+        if include_object_reviews:
+            merged.decisions.extend(result.decisions)
+        merged.findings.extend(result.findings)
+        if include_behavior_reviews:
+            merged.behaviors.extend(result.behaviors)
+        merged.issues.extend(result.issues)
+        merged.passes.append(
+            ReviewPassSummary(
+                pass_id=result.review_pass,
+                attempted=True,
+                status="completed",
+                duration_ms=result.duration_ms,
+                finding_count=len(result.findings),
+                issue_count=len(result.issues),
+            )
+        )
+        return reviewed, merged
+
+    def apply(
+        self,
+        image: ValidatedImage,
+        observations: list[Observation],
+        modules: list[ModuleSummary],
+        detection_summary: DetectionSummary,
+    ) -> tuple[list[Observation], ReviewSummary]:
+        """Backward-compatible single full-image review entry point."""
+        reviewed, summary = self.prepare(observations, modules, detection_summary)
         if self.provider is None:
             return reviewed, summary
 
         result = self.provider.review(image, detection_summary)
-        decisions_by_id = {decision.observation_id: decision for decision in result.decisions}
-        for observation in reviewed:
-            decision = decisions_by_id.get(observation.id)
-            if decision is None:
-                continue
-            if decision.verdict == "confirmed":
-                observation.review.status = "confirmed"
-            elif decision.verdict == "rejected":
-                observation.review.status = "rejected"
-            elif decision.verdict == "corrected":
-                observation.review.status = "confirmed"
-            else:
-                observation.review.status = "pending"
-            observation.review.required = True
-            if "full_image_vlm_review" not in observation.review.reasons:
-                observation.review.reasons.append("full_image_vlm_review")
-
-        return reviewed, ReviewSummary(
-            required=True,
-            reasons=summary.reasons,
-            attempted=True,
-            status="completed",
-            provider=result.provider,
-            model_id=result.model_id,
-            duration_ms=result.duration_ms,
-            decisions=result.decisions,
-            findings=result.findings,
-            behaviors=result.behaviors,
-            issues=result.issues,
-            uncertain_policy=self.policy.settings.uncertain_policy,
-            review_failure_policy=self.policy.settings.review_failure_policy,
+        return self.apply_result(
+            reviewed,
+            summary,
+            result,
+            include_object_reviews=True,
+            include_behavior_reviews=True,
         )

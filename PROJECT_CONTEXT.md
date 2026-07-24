@@ -15,11 +15,11 @@
 禁带品和垃圾数据准备已基本完成，两个独立 YOLO11m 已在外部训练机完成训练。项目当前进入：
 
 - 两个已训练 detector 已在 macOS 和 NVIDIA Thor 上完成 Runtime 实际运行验证。
-- 当前扩展共享 Runtime，形成 Detection -> Detection Summary -> 全图 Review -> Fusion -> Output 链路。
+- 当前共享 Runtime 已形成 Detection -> Detection Summary -> Full Image Review -> Crop Scan Review -> Fusion -> Output 链路。
 - 准备 NVIDIA Jetson AGX Thor Developer Kit 的多模型部署和 TensorRT 验证。
 - 接入真实 Qwen2.5-VL 服务并验证 10 秒超时与降级行为。
 
-不文明行为尚未形成独立训练数据集和专用模型；当前已实现单图 Behavior Pipeline，使用 YOLO-World 基础对象、配置化候选规则和现有一次全图 Qwen Review 共同判断四类行为。
+不文明行为尚未形成独立训练数据集和专用模型；当前已实现单图 Behavior Pipeline，使用 YOLO-World 基础对象、配置化候选规则和 Full Image Qwen Review 共同判断四类行为。
 
 ## 最新模型决策
 
@@ -43,16 +43,17 @@
 - enabled detection module 必须声明有序 `expected_class_names`；Ultralytics 权重加载后、图片处理前严格校验类别 ID、数量、名称和顺序。
 - Pipeline 根据模型来源写入 `task_group`，不同模型保留各自 class id 空间。
 - 跨 task group 高 IoU 结果全部保留，并互相标记 `cross_model_overlap`，不实施业务优先级删除。
-- 已实现 Detection Summary、Qwen2.5-VL provider 接口、全图 Prompt Builder、严格 Response Parser 和最终 Fusion。
-- 已实现配置驱动的单图 Behavior Pipeline：基础对象只生成候选，最终行为必须由同一次全图 VLM 请求确认；无候选时仍允许全图发现明显行为。
+- 已实现 Detection Summary、Qwen2.5-VL 双 Pass provider、两套互补 Prompt、共享逐项容错 Parser 和最终 Fusion。
+- 已实现配置驱动的单图 Behavior Pipeline：基础对象只生成候选，最终行为必须由 Full Image Pass 确认；无候选时仍允许全图发现明显行为。
 - 当前正式行为类别为 `trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。
-- VLM 接收完整原图，Detection Summary 仅作为上下文；VLM 可以确认、拒绝、纠正 YOLO，并报告没有 bbox 的漏检 finding。
-- bbox 始终由 YOLO observation 提供；VLM 不输出或修正坐标。
+- Pass 1 接收完整原图和 Detection Summary，负责确认、拒绝、纠正 YOLO、明显漏检和行为；Pass 2 在一次请求中接收全部重叠 crops，独立扫描小目标。
+- corrected 始终复用 YOLO bbox；VLM 新 finding 必须提供 full-image 或 crop-relative normalized bbox，由 Pipeline 转为完整原图 geometry。
+- Fusion 对同类高 IoU 结果去重，并保留来源追踪；不同类别高 IoU 结果不静默删除。
 - JSON 与 Preview 使用同一个最终 `PipelineResponse`，Preview 不重新推理或重算 bbox。
 - Fusion 或 Review 失败不会删除成功模块的 observations；结果保留并以 `partial_success` 和阶段错误返回。
 - `Observation.track_id` 已预留且单图流程默认为 `null`；Tracking 和多帧融合尚未实现。
-- 当前执行策略固定为 sequential，只记录耗时，尚未实现强制 timeout 或 10 秒 deadline。
-- Behavior 的单图语义链路已实现；多帧、tracking、pose/区域关系增强和 TensorRT 仍是后续扩展。Qwen provider 已实现，但尚未连接真实 VLM 服务。
+- 当前执行策略固定为 sequential，分别记录 detection、Full Image Review、crop 生成、Crop Scan Review、Fusion 和 Preview 耗时；每个 Review Pass 有独立 HTTP timeout，完整请求级 10 秒 deadline 尚未实现。
+- Behavior 的单图语义链路已实现；多帧、tracking、pose/区域关系增强和 TensorRT 仍是后续扩展。Qwen 单次全图 Review 已在 Thor 跑通，双 Pass 链路尚待真实 VLM 服务复测。
 
 核心自动测试使用 FakeBackend 和 mock HTTP，不调用真实 YOLO 或 VLM；detector 实际运行已由 macOS 与 Thor 验证。
 

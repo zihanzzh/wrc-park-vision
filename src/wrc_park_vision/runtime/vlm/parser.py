@@ -52,11 +52,18 @@ class _RawFinding(BaseModel):
     class_name: str
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     reasoning: Optional[str] = None
+    bbox_normalized_xyxy: Optional[tuple[float, float, float, float]] = None
+    crop_id: Optional[str] = None
+    review_pass: Optional[Literal["full_image", "crop_scan"]] = None
+    geometry_source: Optional[Literal["vlm_full_image", "vlm_crop"]] = None
 
-    @field_validator("task_group", "class_name", mode="before")
+    @field_validator("task_group", "class_name", "crop_id", mode="before")
     @classmethod
     def strip_identifiers(cls, value: object) -> object:
-        return value.strip() if isinstance(value, str) else value
+        if not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        return stripped or None
 
 
 class _RawBehaviorDecision(BaseModel):
@@ -126,6 +133,8 @@ def _item_issue(
     *,
     observation_id: str | None = None,
     candidate_id: str | None = None,
+    crop_id: str | None = None,
+    review_pass: Literal["full_image", "crop_scan"] | None = None,
 ) -> ReviewIssue:
     return ReviewIssue(
         section=section,  # type: ignore[arg-type]
@@ -134,6 +143,8 @@ def _item_issue(
         message=message,
         observation_id=observation_id,
         candidate_id=candidate_id,
+        crop_id=crop_id,
+        review_pass=review_pass,
     )
 
 
@@ -160,6 +171,10 @@ def parse_review_response(
     content: str,
     summary: DetectionSummary,
     class_catalog: dict[str, list[str]],
+    *,
+    review_pass: Literal["full_image", "crop_scan"] = "full_image",
+    require_finding_bbox: bool = False,
+    valid_crop_ids: set[str] | None = None,
 ) -> ParsedReviewResponse:
     """Keep valid items and report invalid siblings without inventing semantics."""
     try:
@@ -169,7 +184,11 @@ def parse_review_response(
     if not isinstance(payload, dict):
         raise ReviewResponseError("invalid VLM review response: top-level value must be an object")
 
-    expected_ids = [item.observation_id for item in summary.detections]
+    expected_ids = [
+        item.observation_id
+        for item in summary.detections
+        if review_pass == "full_image"
+    ]
     summary_by_id = {item.observation_id: item for item in summary.detections}
     issues: list[ReviewIssue] = []
     decisions_by_id: dict[str, VLMReviewDecision] = {}
@@ -177,7 +196,15 @@ def parse_review_response(
         try:
             item = _RawDecision.model_validate(value)
         except ValidationError as exc:
-            issues.append(_item_issue("yolo_reviews", index, "invalid_item", str(exc)))
+            issues.append(
+                _item_issue(
+                    "yolo_reviews",
+                    index,
+                    "invalid_item",
+                    str(exc),
+                    review_pass=review_pass,
+                )
+            )
             continue
         observation_id = item.observation_id
         if observation_id not in summary_by_id:
@@ -188,6 +215,7 @@ def parse_review_response(
                     "unknown_observation",
                     f"unknown observation_id: {observation_id}",
                     observation_id=observation_id,
+                    review_pass=review_pass,
                 )
             )
             continue
@@ -199,6 +227,7 @@ def parse_review_response(
                     "duplicate_observation",
                     f"duplicate observation_id: {observation_id}",
                     observation_id=observation_id,
+                    review_pass=review_pass,
                 )
             )
             continue
@@ -247,6 +276,7 @@ def parse_review_response(
                     "invalid_correction",
                     str(exc),
                     observation_id=observation_id,
+                    review_pass=review_pass,
                 )
             )
             continue
@@ -269,6 +299,7 @@ def parse_review_response(
                     code="missing_observation_review",
                     message=f"missing review for observation_id: {observation_id}",
                     observation_id=observation_id,
+                    review_pass=review_pass,
                 )
             )
     decisions = [
@@ -281,16 +312,62 @@ def parse_review_response(
     for index, value in enumerate(_section_items(payload, "new_findings", issues)):
         try:
             item = _RawFinding.model_validate(value)
-            _class_id(item.task_group, item.class_name, class_catalog)
-        except (ValidationError, ReviewResponseError) as exc:
-            issues.append(_item_issue("new_findings", index, "invalid_item", str(exc)))
-            continue
-        findings.append(
-            VLMFinding(
-                id=f"vlm-{len(findings) + 1:04d}",
-                **item.model_dump(),
+            class_id = _class_id(item.task_group, item.class_name, class_catalog)
+            if item.review_pass is not None and item.review_pass != review_pass:
+                raise ReviewResponseError(
+                    f"finding review_pass must be {review_pass}, got {item.review_pass}"
+                )
+            expected_geometry_source = (
+                "vlm_full_image" if review_pass == "full_image" else "vlm_crop"
             )
-        )
+            if (
+                item.geometry_source is not None
+                and item.geometry_source != expected_geometry_source
+            ):
+                raise ReviewResponseError(
+                    "finding geometry_source must be "
+                    f"{expected_geometry_source}, got {item.geometry_source}"
+                )
+            if require_finding_bbox and item.bbox_normalized_xyxy is None:
+                raise ReviewResponseError("finding requires bbox_normalized_xyxy")
+            if review_pass == "full_image":
+                if item.crop_id is not None:
+                    raise ReviewResponseError("full-image finding must not include crop_id")
+            else:
+                if item.crop_id is None:
+                    raise ReviewResponseError("crop-scan finding requires crop_id")
+                if valid_crop_ids is not None and item.crop_id not in valid_crop_ids:
+                    raise ReviewResponseError(f"unknown crop_id: {item.crop_id}")
+            finding = VLMFinding(
+                id=(
+                    f"vlm-full-{len(findings) + 1:04d}"
+                    if review_pass == "full_image"
+                    else f"vlm-crop-{len(findings) + 1:04d}"
+                ),
+                task_group=item.task_group,
+                class_id=class_id,
+                class_name=item.class_name,
+                confidence=item.confidence,
+                reasoning=item.reasoning,
+                bbox_normalized_xyxy=item.bbox_normalized_xyxy,
+                crop_id=item.crop_id,
+                review_pass=review_pass,
+                geometry_source=expected_geometry_source,
+            )
+        except (ValidationError, ReviewResponseError) as exc:
+            crop_id = value.get("crop_id") if isinstance(value, dict) else None
+            issues.append(
+                _item_issue(
+                    "new_findings",
+                    index,
+                    "invalid_item",
+                    str(exc),
+                    crop_id=crop_id if isinstance(crop_id, str) else None,
+                    review_pass=review_pass,
+                )
+            )
+            continue
+        findings.append(finding)
 
     known_observation_ids = set(expected_ids)
     behavior_classes = {item.class_name: item for item in summary.behavior_classes}
@@ -302,7 +379,15 @@ def parse_review_response(
         try:
             item = _RawBehaviorDecision.model_validate(value)
         except ValidationError as exc:
-            issues.append(_item_issue("behavior_reviews", index, "invalid_item", str(exc)))
+            issues.append(
+                _item_issue(
+                    "behavior_reviews",
+                    index,
+                    "invalid_item",
+                    str(exc),
+                    review_pass=review_pass,
+                )
+            )
             continue
         behavior_class = behavior_classes.get(item.class_name)
         if behavior_class is None:
@@ -313,6 +398,7 @@ def parse_review_response(
                     "unknown_behavior_class",
                     f"unknown VLM behavior class: {item.class_name}",
                     candidate_id=item.candidate_id,
+                    review_pass=review_pass,
                 )
             )
             continue
@@ -325,6 +411,7 @@ def parse_review_response(
                     "unknown_candidate",
                     f"unknown behavior candidate_id: {item.candidate_id}",
                     candidate_id=item.candidate_id,
+                    review_pass=review_pass,
                 )
             )
             continue
@@ -336,6 +423,7 @@ def parse_review_response(
                     "duplicate_candidate",
                     f"duplicate behavior candidate_id: {item.candidate_id}",
                     candidate_id=item.candidate_id,
+                    review_pass=review_pass,
                 )
             )
             continue
@@ -348,6 +436,7 @@ def parse_review_response(
                     f"behavior candidate {candidate.id} expects "
                     f"{candidate.class_name}, got {item.class_name}",
                     candidate_id=candidate.id,
+                    review_pass=review_pass,
                 )
             )
             continue
@@ -358,6 +447,7 @@ def parse_review_response(
                     index,
                     "unconfirmed_full_image_behavior",
                     "behavior without a candidate must be confirmed",
+                    review_pass=review_pass,
                 )
             )
             continue
@@ -372,6 +462,7 @@ def parse_review_response(
                     "unknown_behavior_evidence",
                     f"unknown behavior evidence observation IDs: {unknown_evidence}",
                     candidate_id=item.candidate_id,
+                    review_pass=review_pass,
                 )
             )
             continue
@@ -388,6 +479,7 @@ def parse_review_response(
                         f"behavior candidate {candidate.id} contains unrelated evidence IDs: "
                         f"{unexpected_evidence}",
                         candidate_id=candidate.id,
+                        review_pass=review_pass,
                     )
                 )
                 continue
@@ -400,6 +492,7 @@ def parse_review_response(
                         "duplicate_confirmed_behavior",
                         f"duplicate confirmed behavior class: {item.class_name}",
                         candidate_id=item.candidate_id,
+                        review_pass=review_pass,
                     )
                 )
                 continue

@@ -39,6 +39,9 @@
 
 - 10 秒从图片发送、Thor 接收还是 Runtime 开始处理时计时？
 - 多个 YOLO engine、结果融合和 VLM 各分配多少预算？
+- Full Image 与 Crop Scan 两个 Pass 在 Thor 上的实际耗时分别是多少，是否能稳定把完整链路控制在 10 秒内？
+- 当前默认 crop 数量、20% overlap、1.4 宽高比阈值是否需要根据真实比赛分辨率调整？
+- VLM normalized bbox 的真实定位误差和跨 crop 重复率是否足以使用默认 0.65 IoU 去重阈值？
 - Qwen / VLM 具体运行在 3090、其他高算力设备还是 Thor？
 - 比赛现场是否允许额外设备和联网？
 - 已确认单图 Review 使用完整原图；未来 behavior 是否还需要连续多帧序列？

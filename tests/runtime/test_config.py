@@ -449,6 +449,94 @@ modules:
 
         self.assertEqual(config.review.uncertain_policy, "keep_flagged")
         self.assertEqual(config.review.review_failure_policy, "keep_flagged")
+        self.assertEqual(config.fusion.uncertain_policy, "keep_flagged")
+        self.assertEqual(config.fusion.review_failure_policy, "keep_flagged")
+        self.assertTrue(config.review.full_image.enabled)
+        self.assertTrue(config.review.crop_scan.enabled)
+        self.assertEqual(config.review.crop_scan.overlap, 0.20)
+        self.assertEqual(config.fusion.finding_iou_threshold, 0.65)
+
+    def test_legacy_review_fusion_policies_are_migrated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "runtime.yaml"
+            config_path.write_text(
+                """
+modules:
+  - id: active
+    enabled: true
+    type: detection
+    task_group: garbage
+    backend: ultralytics
+    model_path: model.pt
+    model_id: active_model
+    expected_class_names: [bottle]
+review:
+  uncertain_policy: drop
+  review_failure_policy: drop_review_required
+""",
+                encoding="utf-8",
+            )
+            config = load_runtime_config(config_path, validate_model_paths=False)
+
+        self.assertEqual(config.fusion.uncertain_policy, "drop")
+        self.assertEqual(
+            config.fusion.review_failure_policy,
+            "drop_review_required",
+        )
+
+    def test_invalid_crop_scan_configuration_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "runtime.yaml"
+            config_path.write_text(
+                """
+modules:
+  - id: active
+    enabled: true
+    type: detection
+    task_group: garbage
+    backend: ultralytics
+    model_path: model.pt
+    model_id: active_model
+    expected_class_names: [bottle]
+review:
+  crop_scan:
+    enabled: true
+    overlap: 1.0
+    aspect_ratio_threshold: 1.0
+""",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ConfigError, "invalid runtime config"):
+                load_runtime_config(config_path, validate_model_paths=False)
+
+    def test_examples_enable_dual_review_passes_and_fusion_dedup(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "WRC_YOLO_WORLD_MODEL_PATH": "weights/yolov8s-worldv2.pt",
+                "WRC_GARBAGE_MODEL_PATH": "weights/garbage_best.pt",
+            },
+            clear=False,
+        ):
+            for path in (
+                Path("configs/runtime.example.yaml"),
+                Path("configs/runtime.yolo-world.example.yaml"),
+            ):
+                with self.subTest(path=path):
+                    config = load_runtime_config(
+                        path,
+                        validate_model_paths=False,
+                    )
+                    self.assertTrue(config.review.require_finding_bbox)
+                    self.assertEqual(config.review.full_image.timeout_seconds, 5)
+                    self.assertEqual(config.review.full_image.max_tokens, 1200)
+                    self.assertEqual(config.review.crop_scan.timeout_seconds, 5)
+                    self.assertEqual(config.review.crop_scan.max_tokens, 700)
+                    self.assertEqual(config.review.crop_scan.square_rows, 2)
+                    self.assertEqual(config.review.crop_scan.square_columns, 2)
+                    self.assertEqual(config.review.crop_scan.wide_columns, 3)
+                    self.assertEqual(config.review.crop_scan.tall_rows, 3)
+                    self.assertEqual(config.fusion.finding_iou_threshold, 0.65)
 
     def test_behavior_pipeline_requires_four_canonical_classes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
