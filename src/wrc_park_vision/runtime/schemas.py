@@ -17,7 +17,17 @@ ReviewExecutionStatus = Literal["not_required", "pending", "completed", "failed"
 ReviewVerdict = Literal["confirmed", "rejected", "corrected", "uncertain"]
 BehaviorVerdict = Literal["confirmed", "rejected", "uncertain"]
 FusionStatus = Literal["not_run", "completed", "fallback"]
-FusionAction = Literal["keep_yolo", "reject_yolo", "correct_yolo", "add_vlm_finding", "add_behavior"]
+FusionAction = Literal[
+    "keep_yolo",
+    "keep_uncertain",
+    "drop_uncertain",
+    "keep_review_failed",
+    "drop_review_failed",
+    "reject_yolo",
+    "correct_yolo",
+    "add_vlm_finding",
+    "add_behavior",
+]
 
 
 class BBoxGeometry(BaseModel):
@@ -185,16 +195,28 @@ class VLMReviewDecision(BaseModel):
     observation_id: str
     verdict: ReviewVerdict
     corrected_task_group: Optional[str] = None
+    corrected_class_id: Optional[int] = Field(default=None, ge=0)
     corrected_class_name: Optional[str] = None
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     reasoning: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_correction(self) -> "VLMReviewDecision":
-        has_correction = self.corrected_task_group is not None or self.corrected_class_name is not None
+        has_correction = (
+            self.corrected_task_group is not None
+            or self.corrected_class_id is not None
+            or self.corrected_class_name is not None
+        )
         if self.verdict == "corrected":
-            if self.corrected_task_group is None or self.corrected_class_name is None:
-                raise ValueError("corrected verdict requires corrected_task_group and corrected_class_name")
+            if (
+                self.corrected_task_group is None
+                or self.corrected_class_id is None
+                or self.corrected_class_name is None
+            ):
+                raise ValueError(
+                    "corrected verdict requires corrected_task_group, corrected_class_id, "
+                    "and corrected_class_name"
+                )
         elif has_correction:
             raise ValueError("corrected fields are only allowed for corrected verdict")
         return self
@@ -221,6 +243,22 @@ class VLMBehaviorDecision(BaseModel):
     reasoning: Optional[str] = None
 
 
+class ReviewIssue(BaseModel):
+    section: Literal["yolo_reviews", "new_findings", "behavior_reviews", "response"]
+    item_index: Optional[int] = Field(default=None, ge=0)
+    code: str
+    message: str
+    observation_id: Optional[str] = None
+    candidate_id: Optional[str] = None
+
+
+class ParsedReviewResponse(BaseModel):
+    decisions: list[VLMReviewDecision] = Field(default_factory=list)
+    findings: list[VLMFinding] = Field(default_factory=list)
+    behaviors: list[VLMBehaviorDecision] = Field(default_factory=list)
+    issues: list[ReviewIssue] = Field(default_factory=list)
+
+
 class VLMReviewResult(BaseModel):
     provider: str
     model_id: str
@@ -228,6 +266,7 @@ class VLMReviewResult(BaseModel):
     decisions: list[VLMReviewDecision] = Field(default_factory=list)
     findings: list[VLMFinding] = Field(default_factory=list)
     behaviors: list[VLMBehaviorDecision] = Field(default_factory=list)
+    issues: list[ReviewIssue] = Field(default_factory=list)
 
 
 class FusionDecision(BaseModel):
@@ -236,9 +275,13 @@ class FusionDecision(BaseModel):
     observation_id: Optional[str] = None
     finding_id: Optional[str] = None
     behavior_review_id: Optional[str] = None
+    original_task_group: Optional[str] = None
+    original_class_name: Optional[str] = None
     final_task_group: Optional[str] = None
     final_class_name: Optional[str] = None
     geometry_source: Literal["yolo", "none"]
+    yolo_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    vlm_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     evidence_observation_ids: list[str] = Field(default_factory=list)
     reasoning: Optional[str] = None
 
@@ -281,6 +324,9 @@ class ReviewSummary(BaseModel):
     decisions: list[VLMReviewDecision] = Field(default_factory=list)
     findings: list[VLMFinding] = Field(default_factory=list)
     behaviors: list[VLMBehaviorDecision] = Field(default_factory=list)
+    issues: list[ReviewIssue] = Field(default_factory=list)
+    uncertain_policy: Literal["keep_flagged", "drop"] = "keep_flagged"
+    review_failure_policy: Literal["keep_flagged", "drop_review_required"] = "keep_flagged"
 
 
 class RuntimeErrorInfo(BaseModel):

@@ -308,6 +308,7 @@ class PipelineTests(unittest.TestCase):
                             observation_id=summary.detections[0].observation_id,
                             verdict="corrected",
                             corrected_task_group="prohibited",
+                            corrected_class_id=0,
                             corrected_class_name="prohibited_class",
                         )
                     ],
@@ -333,7 +334,9 @@ class PipelineTests(unittest.TestCase):
             ).process(image_path)
 
         self.assertEqual(provider.image_size, (100, 80))
-        self.assertEqual(response.observations[0].class_name, "spray_can")
+        self.assertEqual(response.observations[0].class_name, "prohibited_class")
+        self.assertEqual(response.observations[0].confidence, 0.9)
+        self.assertEqual(response.observations[0].geometry.bbox_xyxy, (10.0, 10.0, 30.0, 40.0))
         self.assertEqual(len(response.review.findings), 1)
         self.assertEqual(
             [decision.action for decision in response.fusion.decisions],

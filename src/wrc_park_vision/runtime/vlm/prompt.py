@@ -26,17 +26,7 @@ def _build_output_template(summary: DetectionSummary) -> dict[str, object]:
             for item in summary.detections
         ],
         "new_findings": [],
-        "behavior_reviews": [
-            {
-                "candidate_id": candidate.id,
-                "class_name": candidate.class_name,
-                "verdict": "uncertain",
-                "confidence": None,
-                "evidence_observation_ids": candidate.evidence_observation_ids,
-                "reasoning": None,
-            }
-            for candidate in summary.behavior_candidates
-        ],
+        "behavior_reviews": [],
     }
 
 
@@ -80,8 +70,8 @@ def build_review_prompt(
 1. 每个 detection 的 observation_id 在 yolo_reviews 中恰好出现一次。verdict 只能是 confirmed、rejected、corrected、uncertain。
 2. 仅 corrected 可设置 corrected_task_group 和 corrected_class_name；其他 verdict 必须为 null。
 3. 漏检对象写入 new_findings。每项只含 task_group、class_name、confidence、reasoning。
-4. 每个 behavior candidate 在 behavior_reviews 中恰好出现一次。候选不是事实，必须看完整图片确认。
-5. 无候选时仍扫描四类行为。明确发现时增加 candidate_id=null、verdict=confirmed 的 behavior review。
+4. behavior candidate 只是上下文。只有确认发生的行为才写入 behavior_reviews；没有行为时必须返回空数组。
+5. 无候选时仍扫描四类行为。只有明确发现行为时才可增加 candidate_id=null、verdict=confirmed 的条目。
 6. 正常坐在长椅上不是 standing_or_lying_on_bench。证据不足返回 uncertain，不要虚构目标或行为。
 7. 不输出 bbox、坐标、mask、polygon、关键点或其他字段。
 8. reasoning 优先为 null；必要时只写一个极短句，不展示分析过程。

@@ -75,34 +75,76 @@ def fuse_review_results(
     review: ReviewSummary,
     behavior_observations: list[Observation] | None = None,
 ) -> tuple[list[Observation], FusionSummary]:
-    """Preserve detector results and append explicit VLM-derived semantic results."""
-    preserved = [observation.model_copy(deep=True) for observation in observations]
+    """Apply semantic review decisions while preserving detector geometry and confidence."""
+    finalized: list[Observation] = []
     review_by_id = {decision.observation_id: decision for decision in review.decisions}
     decisions: list[FusionDecision] = []
 
-    for observation in preserved:
+    for source_observation in observations:
+        observation = source_observation.model_copy(deep=True)
         review_decision = review_by_id.get(observation.id)
         action = "keep_yolo"
         final_task_group = observation.task_group
         final_class_name = observation.class_name
         reasoning = None
+        keep_observation = True
         if review_decision is not None:
             reasoning = review_decision.reasoning
             if review_decision.verdict == "rejected":
                 action = "reject_yolo"
+                keep_observation = False
             elif review_decision.verdict == "corrected":
                 action = "correct_yolo"
+                assert review_decision.corrected_task_group is not None
+                assert review_decision.corrected_class_id is not None
+                assert review_decision.corrected_class_name is not None
+                observation.metadata["original_task_group"] = observation.task_group
+                observation.metadata["original_class_id"] = observation.class_id
+                observation.metadata["original_class_name"] = observation.class_name
+                observation.task_group = review_decision.corrected_task_group
+                observation.class_id = review_decision.corrected_class_id
+                observation.class_name = review_decision.corrected_class_name
                 final_task_group = review_decision.corrected_task_group
                 final_class_name = review_decision.corrected_class_name
+            elif review_decision.verdict == "uncertain":
+                action = "keep_uncertain"
+                observation.review.required = True
+                observation.review.status = "pending"
+                if "vlm_uncertain" not in observation.review.reasons:
+                    observation.review.reasons.append("vlm_uncertain")
+                if review.uncertain_policy == "drop":
+                    action = "drop_uncertain"
+                    keep_observation = False
+            if review_decision.confidence is not None:
+                observation.metadata["vlm_review_confidence"] = review_decision.confidence
+        elif review.attempted or review.status == "failed":
+            action = "keep_review_failed"
+            observation.review.required = True
+            observation.review.status = "pending"
+            if "review_item_missing_or_failed" not in observation.review.reasons:
+                observation.review.reasons.append("review_item_missing_or_failed")
+            if (
+                review.review_failure_policy == "drop_review_required"
+                and source_observation.review.required
+            ):
+                action = "drop_review_failed"
+                keep_observation = False
+
+        if keep_observation:
+            finalized.append(observation)
 
         decisions.append(
             FusionDecision(
                 id=f"fusion-{len(decisions) + 1:04d}",
                 action=action,
                 observation_id=observation.id,
+                original_task_group=source_observation.task_group,
+                original_class_name=source_observation.class_name,
                 final_task_group=final_task_group,
                 final_class_name=final_class_name,
                 geometry_source="yolo",
+                yolo_confidence=source_observation.confidence,
+                vlm_confidence=review_decision.confidence if review_decision is not None else None,
                 reasoning=reasoning,
             )
         )
@@ -116,13 +158,14 @@ def fuse_review_results(
                 final_task_group=finding.task_group,
                 final_class_name=finding.class_name,
                 geometry_source="none",
+                vlm_confidence=finding.confidence,
                 reasoning=finding.reasoning,
             )
         )
 
     for behavior in behavior_observations or []:
         preserved_behavior = behavior.model_copy(deep=True)
-        preserved.append(preserved_behavior)
+        finalized.append(preserved_behavior)
         decisions.append(
             FusionDecision(
                 id=f"fusion-{len(decisions) + 1:04d}",
@@ -137,4 +180,4 @@ def fuse_review_results(
             )
         )
 
-    return preserved, FusionSummary(status="completed", decisions=decisions)
+    return finalized, FusionSummary(status="completed", decisions=decisions)

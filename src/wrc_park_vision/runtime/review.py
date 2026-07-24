@@ -43,7 +43,13 @@ class ReviewPolicy:
             top_reasons.add("module_failure")
         ordered = [reason for reason in REASON_ORDER if reason in top_reasons]
         status = "pending" if ordered else "not_required"
-        return reviewed, ReviewSummary(required=bool(ordered), reasons=ordered, status=status)
+        return reviewed, ReviewSummary(
+            required=bool(ordered),
+            reasons=ordered,
+            status=status,
+            uncertain_policy=self.settings.uncertain_policy,
+            review_failure_policy=self.settings.review_failure_policy,
+        )
 
 
 class ReviewCoordinator:
@@ -106,4 +112,7 @@ class ReviewCoordinator:
             decisions=result.decisions,
             findings=result.findings,
             behaviors=result.behaviors,
+            issues=result.issues,
+            uncertain_policy=self.policy.settings.uncertain_policy,
+            review_failure_policy=self.policy.settings.review_failure_policy,
         )

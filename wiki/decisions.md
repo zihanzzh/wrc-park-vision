@@ -168,11 +168,11 @@
 - 决策：VLM 只提供语义理解，不输出或修正 bbox、mask、polygon、pose 等定位信息。
 - 说明：VLM-only finding 可以没有 geometry；Response Parser 应拒绝 VLM 返回定位字段。
 
-### D029：Fusion 必须保留所有来源
+### D029：Fusion 必须保留所有来源的可审计信息
 
-- 日期：2026-07-20
-- 决策：最终 `PipelineResponse` 同时保留原始 YOLO observations、VLM review decisions/findings 和 final fusion decisions，任何来源不得被静默丢弃。
-- 说明：YOLO 被拒绝或纠正时仍保留原 observation 和 bbox，由 `reject_yolo` / `correct_yolo` 决策表达最终语义；VLM-only finding 使用 `add_vlm_finding` 且不伪造 bbox。
+- 日期：2026-07-20，2026-07-23 Phase 1 更新
+- 决策：最终 observations 应用 VLM verdict；原始 YOLO 信息、VLM review 和 final fusion decisions 仍必须可审计，不得静默丢失。
+- 说明：confirmed 保留；corrected 复用原 YOLO bbox/confidence 并更新最终 task/class；rejected 从最终 observations 移除；uncertain 和 review failure 按配置处理。原检测仍保存在 Detection Summary 与 FusionDecision。
 
 ### D030：Qwen2.5-VL 通过独立 provider 接入
 
@@ -191,6 +191,18 @@
 - 日期：2026-07-23
 - 决策：正式行为类别固定为 `trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。YOLO-World 基础对象组合只生成 candidate，最终行为必须由现有同一次全图 VLM 请求确认。
 - 说明：每张图片最多调用一次 VLM，该响应同时处理 YOLO review、漏检物体和 behavior review/full-image scan。没有基础对象时仍允许发现明显行为；未确认、provider disabled 或 VLM 失败时不得生成行为 observation。
+
+### D033：VLM Response 使用逐项容错解析
+
+- 日期：2026-07-23
+- 决策：`yolo_reviews`、`new_findings`、`behavior_reviews` 分别逐项解析。单条非法结果记录结构化 `ReviewIssue` 并跳过，不能使其他合法条目丢失。
+- 说明：只有顶层响应无法解析为 JSON object 时 Review 才整体失败；缺失审核按 review failure policy 处理。没有确认行为时 `behavior_reviews` 使用空数组。
+
+### D034：Phase 1 Review 降级默认保留并标记
+
+- 日期：2026-07-23
+- 决策：`uncertain_policy` 和 `review_failure_policy` 默认均为 `keep_flagged`。
+- 说明：不确定或未完成审核的 YOLO 结果不会被静默视为 confirmed；最终 observation 保持 pending 并记录原因，FusionDecision 显式记录对应动作。
 
 ## 被替代的历史方案
 

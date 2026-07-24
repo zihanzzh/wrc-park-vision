@@ -68,8 +68,8 @@ image path
 - schema 已为 `mask`、`pose`、`region` 和 `relation` 预留 observation geometry。
 - TensorRT backend 和未来独立 behavior model module 仍明确返回未实现错误；当前单图 Behavior Pipeline 已作为检测后的语义阶段实现。
 - Review provider 默认关闭；启用后通过 OpenAI-compatible endpoint 调用 Qwen2.5-VL，发送完整原图和 Detection Summary。
-- Response Parser 要求逐条复核 Detection Summary 中的 YOLO detection，并拒绝 VLM 输出定位字段。
-- Final Fusion 不修改原始 YOLO 类别和 bbox；纠正、拒绝和 VLM-only finding 通过独立决策记录表达。
+- Response Parser 对三个响应数组逐项校验；非法条目记录结构化 issue 并跳过，不再使合法兄弟条目丢失。当前仍拒绝 VLM 输出定位字段。
+- Final Fusion 对最终 observations 应用 confirmed / corrected / rejected / uncertain 语义；corrected 复用 YOLO bbox 和 confidence，原始检测信息保留在 Detection Summary、Review 和 FusionDecision 中。
 - 当前只支持单张图片路径 CLI、顺序执行和耗时记录。
 - 当前没有实现 API、ROS2、tracking、并行执行、请求级 deadline 或 TensorRT backend；provider HTTP timeout 已配置为 10 秒。
 - Runtime 要求 Python 3.10 或更高版本。
@@ -211,17 +211,18 @@ Runtime v1 采用保守规则：
 - VLM 对每条 YOLO detection 返回 `confirmed`、`rejected`、`corrected` 或 `uncertain`。
 - VLM 可以通过 `new_findings` 报告 YOLO 漏检的项目类别目标；finding 不包含 bbox。
 - 同一次 VLM 响应通过 `behavior_reviews` 确认或否定候选，并可报告没有 candidate 的全图行为发现。
-- parser 严格校验 observation 覆盖、重复 ID、任务类别目录和返回结构，并拒绝 bbox / mask / polygon 等额外定位字段。
+- parser 分别解析 observation review、finding 和 behavior review。非法项、缺失项、重复 ID 或非法类别写入 `ReviewIssue`，合法项继续进入 Fusion；顶层响应无法解析时才整体失败。
 - provider 默认关闭，因此现有 detector-only Pipeline 继续工作；启用 provider 后每张输入图片执行一次全图 Review。
 - VLM 真实延迟与效果尚未验证，不能用 mock 测试推断比赛性能。
 
 ### 9. Final Fusion 与输出
 
-- `observations` 保留原始 YOLO 结果及其 geometry，不因 VLM 拒绝或纠正而删除或改写。
+- 最终 `observations` 应用 VLM verdict：confirmed 保留；corrected 复用原 YOLO geometry/confidence 并更新 task/class；rejected 移除；uncertain 按配置处理，默认保留并标记 pending。
+- 原始 YOLO detection 仍可通过 Detection Summary、ReviewDecision 和 FusionDecision 审计；FusionDecision 同时记录 YOLO confidence 与 VLM confidence。
 - VLM `confirmed` 的行为以 `kind: behavior` observation 加入结果；同一行为类别单图只保留一条，不确认则不添加。
 - `review.decisions` 与 `review.findings` 保留 VLM 原始语义结论。
 - `fusion.decisions` 明确记录 `keep_yolo`、`reject_yolo`、`correct_yolo` 或 `add_vlm_finding`。
-- `geometry_source: yolo` 表示坐标来自 YOLO；VLM-only finding 使用 `geometry_source: none`。
+- `geometry_source: yolo` 表示 confirmed/corrected 坐标来自 YOLO；VLM-only finding 仍使用 `geometry_source: none`。
 - Preview 从最终 `PipelineResponse` 读取同一份 observation 和 fusion decision。VLM-only finding 只显示文字，不创建框。
 
 ### 10. 10 秒预算与降级

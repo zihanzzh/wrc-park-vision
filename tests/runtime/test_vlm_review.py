@@ -138,6 +138,8 @@ class VLMReviewTests(unittest.TestCase):
                     {
                         "observation_id": " obs-0001 ",
                         "verdict": "confirmed",
+                        "corrected_task_group": None,
+                        "corrected_class_name": None,
                         "confidence": None,
                         "reasoning": "",
                     }
@@ -154,14 +156,52 @@ class VLMReviewTests(unittest.TestCase):
             }
         )
 
-        decisions, findings, behaviors = parse_review_response(content, make_summary(), CATALOG)
+        parsed = parse_review_response(content, make_summary(), CATALOG)
 
-        self.assertEqual(decisions[0].observation_id, "obs-0001")
-        self.assertEqual(decisions[0].reasoning, "")
-        self.assertEqual(findings[0].task_group, "garbage")
-        self.assertEqual(findings[0].class_name, "plastic_drink_bottle")
-        self.assertIsNone(findings[0].reasoning)
-        self.assertEqual(behaviors, [])
+        self.assertEqual(parsed.decisions[0].observation_id, "obs-0001")
+        self.assertEqual(parsed.decisions[0].reasoning, "")
+        self.assertEqual(parsed.findings[0].task_group, "garbage")
+        self.assertEqual(parsed.findings[0].class_name, "plastic_drink_bottle")
+        self.assertIsNone(parsed.findings[0].reasoning)
+        self.assertEqual(parsed.behaviors, [])
+        self.assertEqual(parsed.issues, [])
+
+    def test_invalid_yolo_review_does_not_drop_valid_sibling(self) -> None:
+        summary = make_summary().model_copy(
+            update={
+                "total_detections": 2,
+                "detections": [
+                    *make_summary().detections,
+                    DetectionSummaryItem(
+                        observation_id="obs-0002",
+                        task_group="prohibited_items",
+                        class_id=2,
+                        class_name="speaker",
+                        confidence=0.6,
+                        bbox_xyxy=(40, 5, 80, 50),
+                        bbox_normalized_xyxy=(0.4, 0.0625, 0.8, 0.625),
+                    ),
+                ],
+            }
+        )
+        content = json.dumps(
+            {
+                "yolo_reviews": [
+                    {"observation_id": "obs-0001", "verdict": "confirmed"},
+                    {"observation_id": "obs-0002", "verdict": "not_a_verdict"},
+                ],
+                "new_findings": [],
+                "behavior_reviews": [],
+            }
+        )
+
+        parsed = parse_review_response(content, summary, CATALOG)
+
+        self.assertEqual([item.observation_id for item in parsed.decisions], ["obs-0001"])
+        self.assertEqual(
+            [issue.code for issue in parsed.issues],
+            ["invalid_item", "missing_observation_review"],
+        )
 
     def test_parser_preserves_correction_and_vlm_only_finding(self) -> None:
         content = json.dumps(
@@ -186,11 +226,12 @@ class VLMReviewTests(unittest.TestCase):
                 ],
             }
         )
-        decisions, findings, behaviors = parse_review_response(content, make_summary(), CATALOG)
-        self.assertEqual(decisions[0].verdict, "corrected")
-        self.assertEqual(findings[0].id, "vlm-0001")
-        self.assertIsNone(findings[0].geometry)
-        self.assertEqual(behaviors, [])
+        parsed = parse_review_response(content, make_summary(), CATALOG)
+        self.assertEqual(parsed.decisions[0].verdict, "corrected")
+        self.assertEqual(parsed.decisions[0].corrected_class_id, 1)
+        self.assertEqual(parsed.findings[0].id, "vlm-0001")
+        self.assertIsNone(parsed.findings[0].geometry)
+        self.assertEqual(parsed.behaviors, [])
 
     def test_parser_handles_candidate_review_and_full_image_behavior(self) -> None:
         summary = make_summary().model_copy(
@@ -240,35 +281,45 @@ class VLMReviewTests(unittest.TestCase):
             }
         )
 
-        _, _, behaviors = parse_review_response(content, summary, CATALOG)
+        parsed = parse_review_response(content, summary, CATALOG)
 
-        self.assertEqual([item.verdict for item in behaviors], ["rejected", "confirmed"])
-        self.assertEqual(behaviors[0].evidence_observation_ids, ["obs-0001"])
-        self.assertIsNone(behaviors[1].candidate_id)
-        self.assertEqual(behaviors[1].class_id, 2)
+        self.assertEqual([item.verdict for item in parsed.behaviors], ["rejected", "confirmed"])
+        self.assertEqual(parsed.behaviors[0].evidence_observation_ids, ["obs-0001"])
+        self.assertIsNone(parsed.behaviors[1].candidate_id)
+        self.assertEqual(parsed.behaviors[1].class_id, 2)
 
-    def test_parser_rejects_localization_and_incomplete_coverage(self) -> None:
-        with self.assertRaises(ReviewResponseError):
-            parse_review_response(
-                json.dumps(
-                    {
-                        "yolo_reviews": [
-                            {
-                                "observation_id": "obs-0001",
-                                "verdict": "confirmed",
-                                "bbox": [1, 2, 3, 4],
-                            }
-                        ],
-                        "new_findings": [],
-                    }
-                ),
-                make_summary(),
-                CATALOG,
-            )
-        with self.assertRaisesRegex(ReviewResponseError, "coverage mismatch"):
-            parse_review_response('{"yolo_reviews": [], "new_findings": []}', make_summary(), CATALOG)
+    def test_parser_skips_localization_and_reports_incomplete_coverage(self) -> None:
+        localized = parse_review_response(
+            json.dumps(
+                {
+                    "yolo_reviews": [
+                        {
+                            "observation_id": "obs-0001",
+                            "verdict": "confirmed",
+                            "bbox": [1, 2, 3, 4],
+                        }
+                    ],
+                    "new_findings": [],
+                }
+            ),
+            make_summary(),
+            CATALOG,
+        )
+        self.assertEqual(localized.decisions, [])
+        self.assertEqual(
+            [issue.code for issue in localized.issues],
+            ["invalid_item", "missing_observation_review"],
+        )
 
-    def test_parser_still_rejects_invalid_task_group(self) -> None:
+        incomplete = parse_review_response(
+            '{"yolo_reviews": [], "new_findings": []}',
+            make_summary(),
+            CATALOG,
+        )
+        self.assertEqual(incomplete.decisions, [])
+        self.assertEqual(incomplete.issues[0].code, "missing_observation_review")
+
+    def test_parser_skips_invalid_task_group_but_keeps_valid_items(self) -> None:
         content = json.dumps(
             {
                 "yolo_reviews": [{"observation_id": "obs-0001", "verdict": "confirmed"}],
@@ -283,8 +334,72 @@ class VLMReviewTests(unittest.TestCase):
             }
         )
 
-        with self.assertRaisesRegex(ReviewResponseError, "unknown VLM task_group"):
-            parse_review_response(content, make_summary(), CATALOG)
+        parsed = parse_review_response(content, make_summary(), CATALOG)
+
+        self.assertEqual([item.observation_id for item in parsed.decisions], ["obs-0001"])
+        self.assertEqual(parsed.findings, [])
+        self.assertEqual(parsed.issues[0].section, "new_findings")
+        self.assertEqual(parsed.issues[0].code, "invalid_item")
+        self.assertIn("unknown VLM task_group", parsed.issues[0].message)
+
+    def test_rejected_with_legal_correction_is_normalized(self) -> None:
+        content = json.dumps(
+            {
+                "yolo_reviews": [
+                    {
+                        "observation_id": "obs-0001",
+                        "verdict": "rejected",
+                        "corrected_task_group": None,
+                        "corrected_class_name": "speaker",
+                        "confidence": 0.83,
+                    }
+                ],
+                "new_findings": [],
+                "behavior_reviews": [],
+            }
+        )
+
+        parsed = parse_review_response(content, make_summary(), CATALOG)
+
+        self.assertEqual(parsed.decisions[0].verdict, "corrected")
+        self.assertEqual(parsed.decisions[0].corrected_task_group, "prohibited_items")
+        self.assertEqual(parsed.decisions[0].corrected_class_id, 2)
+        self.assertEqual(parsed.decisions[0].corrected_class_name, "speaker")
+        self.assertEqual(parsed.issues, [])
+
+    def test_empty_behavior_reviews_is_valid_even_with_candidates(self) -> None:
+        summary = make_summary().model_copy(
+            update={
+                "behavior_classes": [
+                    BehaviorClassSummary(
+                        class_id=0,
+                        class_name="trampling_grass",
+                        required_object_classes=["person", "grass"],
+                    )
+                ],
+                "behavior_candidates": [
+                    BehaviorCandidate(
+                        id="behavior-candidate-0001",
+                        class_id=0,
+                        class_name="trampling_grass",
+                        evidence_observation_ids=["obs-0001"],
+                        evidence_class_names=["person", "grass"],
+                    )
+                ],
+            }
+        )
+        content = json.dumps(
+            {
+                "yolo_reviews": [{"observation_id": "obs-0001", "verdict": "confirmed"}],
+                "new_findings": [],
+                "behavior_reviews": [],
+            }
+        )
+
+        parsed = parse_review_response(content, summary, CATALOG)
+
+        self.assertEqual(parsed.behaviors, [])
+        self.assertEqual(parsed.issues, [])
 
     def test_qwen_provider_sends_full_image_and_parses_response(self) -> None:
         settings = ReviewProviderSettings(

@@ -139,6 +139,8 @@ class ReviewSettings(BaseModel):
     cross_model_iou_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
     review_cross_task_overlap: bool = True
     review_module_failure: bool = True
+    uncertain_policy: Literal["keep_flagged", "drop"] = "keep_flagged"
+    review_failure_policy: Literal["keep_flagged", "drop_review_required"] = "keep_flagged"
     provider: "ReviewProviderSettings" = Field(default_factory=lambda: ReviewProviderSettings())
 
 

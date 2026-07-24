@@ -109,7 +109,7 @@ class Qwen25VLProvider(ReviewProvider):
             raise RuntimeError(f"Qwen2.5-VL review request failed: {exc}") from exc
         content = self._response_content(payload)
         try:
-            decisions, findings, behaviors = parse_review_response(content, summary, self.class_catalog)
+            parsed = parse_review_response(content, summary, self.class_catalog)
         except ReviewResponseError as exc:
             excerpt = _raw_response_excerpt(content)
             raise ReviewResponseError(
@@ -119,7 +119,8 @@ class Qwen25VLProvider(ReviewProvider):
             provider="qwen2_5_vl",
             model_id=self.settings.model_id,
             duration_ms=(time.perf_counter() - started) * 1000.0,
-            decisions=decisions,
-            findings=findings,
-            behaviors=behaviors,
+            decisions=parsed.decisions,
+            findings=parsed.findings,
+            behaviors=parsed.behaviors,
+            issues=parsed.issues,
         )

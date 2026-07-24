@@ -355,6 +355,28 @@ review:
             with self.assertRaisesRegex(ConfigError, "endpoint and model_id"):
                 load_runtime_config(config_path, validate_model_paths=False)
 
+    def test_review_failure_and_uncertain_default_to_keep_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "runtime.yaml"
+            config_path.write_text(
+                """
+modules:
+  - id: active
+    enabled: true
+    type: detection
+    task_group: garbage
+    backend: ultralytics
+    model_path: model.pt
+    model_id: active_model
+    expected_class_names: [bottle]
+""",
+                encoding="utf-8",
+            )
+            config = load_runtime_config(config_path, validate_model_paths=False)
+
+        self.assertEqual(config.review.uncertain_policy, "keep_flagged")
+        self.assertEqual(config.review.review_failure_policy, "keep_flagged")
+
     def test_behavior_pipeline_requires_four_canonical_classes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "runtime.yaml"

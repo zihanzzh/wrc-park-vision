@@ -2,6 +2,24 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-07-23 Runtime Review/Fusion 重构 Phase 1
+
+本阶段只整理单帧 Runtime 的 Review/Fusion 契约，没有修改 detection modules、Pipeline 主流程、Preview、Crop、双 Pass、训练或部署：
+
+- Parser 改为分别逐项解析 `yolo_reviews`、`new_findings` 和 `behavior_reviews`；非法项跳过并输出结构化 `ReviewIssue`，合法项继续保留。
+- 顶层响应无法解析为 JSON object 时才抛出 Review failure；缺失、重复、非法 ID/类别和不合法纠正成为 item-level issue。
+- 支持把 `rejected + 合法 corrected_class_name` 确定性规范化为 `corrected`，并由 Runtime 类别目录补充 corrected class ID；不根据 reasoning 猜测。
+- `behavior_reviews: []` 在存在候选但没有确认行为时保持合法；无 candidate 的非 confirmed 行为条目会被跳过并记录 issue。
+- Final Fusion 现在形成实际最终 observations：confirmed 保留，corrected 复用 YOLO bbox/confidence 并更新类别，rejected 移除，uncertain 默认保留并标记。
+- FusionDecision 新增原始/最终类别及 YOLO/VLM confidence；单条审核缺失或 Review failure 默认 `keep_flagged`。
+- 示例和本地配置增加 `uncertain_policy: keep_flagged` 与 `review_failure_policy: keep_flagged`。
+
+验证结果：
+
+- 全部 Runtime `unittest` 79 项通过。
+- `compileall` 与 `git diff --check` 通过。
+- 本次没有运行真实模型、下载模型、安装依赖、commit 或 push。
+
 ## 2026-07-23 Qwen2.5-VL-7B 视觉类别准确率优化
 
 Thor 已跑通完整 Runtime：YOLO-World 约 0.87 秒、VLM Review 约 2.61 秒、总时间约 3.50 秒，`status=success` 且 JSON 可解析；但真实 `kick_scooter` 曾被 7B 判断为 `skateboard`。本次保持单次全图 VLM 请求、业务 schema、Fusion 和 Behavior 架构不变，增加配置驱动的紧凑视觉类别指南：

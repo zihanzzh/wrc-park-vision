@@ -10,6 +10,7 @@ from wrc_park_vision.runtime.schemas import (
     DetectionSummary,
     ModuleSummary,
     Observation,
+    ReviewIssue,
     VLMFinding,
     VLMReviewDecision,
     VLMReviewResult,
@@ -55,6 +56,14 @@ class ReviewTests(unittest.TestCase):
                     decisions=[
                         VLMReviewDecision(observation_id="obs-0001", verdict="confirmed"),
                     ],
+                    issues=[
+                        ReviewIssue(
+                            section="new_findings",
+                            item_index=0,
+                            code="invalid_item",
+                            message="invalid class",
+                        )
+                    ],
                 )
 
         provider = FakeReviewProvider()
@@ -74,6 +83,7 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(provider.calls, 1)
         self.assertEqual(reviewed[0].review.status, "confirmed")
         self.assertTrue(summary.attempted)
+        self.assertEqual(summary.issues[0].code, "invalid_item")
 
     def test_provider_reviews_full_image_even_without_detections(self) -> None:
         class FakeReviewProvider(ReviewProvider):

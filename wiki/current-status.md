@@ -6,6 +6,16 @@
 
 本轮已完成代码实现与 mock 自动测试，没有运行真实 Qwen2.5-VL、训练模型、修改数据集、安装依赖或 push。
 
+## Runtime Review/Fusion Phase 1
+
+- VLM Response Parser 已改为逐项容错：`yolo_reviews`、`new_findings`、`behavior_reviews` 分别解析，非法条目跳过并记录结构化 `ReviewIssue`，合法兄弟条目继续保留。
+- 只有响应完全无法解析为 JSON object 时 Review 才整体失败；缺失、重复或非法 observation/candidate/class 会成为 item-level issue。
+- `rejected` 携带可确定映射的合法纠正类别时规范化为 `corrected`；不从 reasoning 或模糊文本猜测类别。
+- 没有确认行为时 `behavior_reviews: []` 是合法结果；无 candidate 的条目只有明确 `confirmed` 才可接受。
+- Final Fusion 现在对最终 observations 应用语义：`confirmed` 保留，`corrected` 复用原 YOLO bbox 和 confidence 并更新类别，`rejected` 移除，`uncertain` 默认保留并标记。
+- FusionDecision 同时记录 YOLO confidence 与 VLM confidence；Review 整体失败或单条缺失审核时默认 `keep_flagged`，不会静默当作 confirmed。
+- 本阶段没有修改 detection modules、Pipeline 主流程、Preview、Crop 或双 Pass；VLM finding 仍没有 bbox。
+
 ## Qwen2.5-VL-7B 视觉类别指南
 
 - Thor 上 `Qwen2.5-VL-7B-Instruct-AWQ` 实测：YOLO-World 约 0.87 秒、VLM Review 约 2.61 秒、总时间约 3.50 秒，`status=success`，JSON 可正常解析且每张图片仍只有一次 VLM 请求。
@@ -53,10 +63,10 @@
 - Ultralytics backend 启动时加载一次模型，并严格校验 `expected_class_names`。
 - 单模块故障隔离、稳定 observation ID、跨 task group 冲突保留与标记。
 - Detection Summary，向 VLM 提供 YOLO 语义上下文，但不限制 VLM 的全图观察范围。
-- Qwen2.5-VL provider interface、OpenAI-compatible HTTP provider、Prompt Builder 和严格 Response Parser。
+- Qwen2.5-VL provider interface、OpenAI-compatible HTTP provider、Prompt Builder 和逐项容错 Response Parser。
 - VLM 可以确认、拒绝或纠正 YOLO 类别，也可以报告 YOLO 完全漏检的目标。
 - VLM 不承担定位，不允许返回 bbox；VLM-only finding 的 `geometry` 为 `null`。
-- Final Fusion 同时保留原始 YOLO observations、VLM decisions/findings 和显式 fusion decisions，不静默删除结果。
+- Final Fusion 根据 VLM verdict 形成最终 observations，同时在 Detection Summary、Review 和 FusionDecision 中保留可审计的原始检测与双置信度信息。
 - Review 或 Fusion 失败时保留 detector 结果，并返回阶段错误和 `partial_success`。
 - JSON 与 Preview 使用同一个最终 `PipelineResponse`；VLM-only finding 只在预览信息区显示，不绘制推测框。
 - Qwen provider 默认关闭，detector-only 配置继续保持可用。
@@ -75,7 +85,7 @@
 
 ## 验证状态
 
-- 自动测试：71 项通过。
+- 自动测试：79 项通过。
 - Python `compileall`：通过。
 - `git diff --check`：通过。
 - Qwen 请求测试使用 mock HTTP，确认发送完整图片 data URL 和 Detection Summary prompt，没有访问真实服务。
