@@ -9,9 +9,9 @@
 ```text
 Robot sends one image
   -> Thor runtime receives image
-  -> Run prohibited_items detector
-  -> Run garbage detector
-  -> Run behavior detector or behavior pipeline
+  -> Run YOLO-World prohibited_items / behavior-object module
+  -> Run Ultralytics YOLO11m garbage module
+  -> Run behavior pipeline
   -> Normalize detections and build Detection Summary
   -> Optional Qwen2.5-VL independently reviews the full image
   -> Fuse YOLO observations, VLM decisions and VLM-only findings
@@ -21,8 +21,8 @@ Robot sends one image
 已确认：
 
 - 当前不是一个统一 YOLO 模型。
-- 禁带品和垃圾分别训练独立 YOLO11m；不文明行为使用后续独立模型或视觉方案。
-- YOLO-World 作为可选 object detector backend 接入，不替换现有 YOLO11m；它可以按配置检测多个任务组的基础物体。
+- 已训练的两个 YOLO11m 权重继续保留；当前 Runtime detection 分工使用 YOLO-World 负责禁带品和行为辅助对象，独立 YOLO11m 负责垃圾。
+- YOLO-World 不负责垃圾，配置和 backend 都拒绝其产生 `task_group: garbage`。
 - 多个独立模型共享同一个 Runtime Pipeline。
 - 机器人只发送图片，不提供 `taskId`、`taskType`、`mode` 或 `category`。
 - Pipeline 根据模型来源写入 `task_group`，不依赖机器人提供任务类型。
@@ -57,10 +57,10 @@ image path
 
 实现边界：
 
-- 当前通过配置注册 `prohibited_items` 和 `garbage` 两个通用 `DetectionModule`，主 Pipeline 不写死模块数量或业务类别。
+- 当前通过配置注册 YOLO-World object module 和独立 garbage YOLO11m module，二者都是通用 `DetectionModule`；主 Pipeline 不写死模块数量或业务类别。
 - Ultralytics backend 在 Pipeline 初始化时加载一次模型，并立即把 Ultralytics result 转成内部普通对象。
 - 固定类别 Ultralytics module 必须配置有序 `expected_class_names`。权重加载后严格比较 class ID 连续性、类别数量、名称和顺序，校验发生在任何图片处理之前。
-- YOLO-World module 使用分组的 `open_vocabulary_classes`，显式配置每个类别的 `task_group`、组内 `class_id`、canonical `class_name` 和 prompts；模型加载后只调用一次 `set_classes()`。
+- YOLO-World module 使用分组的 `open_vocabulary_classes`，仅配置禁带品和行为辅助对象，并显式声明每个类别的 `task_group`、组内 `class_id`、canonical `class_name` 和 prompts；模型加载后只调用一次 `set_classes()`。
 - YOLO-World backend 将 prompt 级检测映射成 canonical 类别，并在 backend 输出中携带 `task_group`；`DetectionModule` 优先使用该值构造统一 `Observation`。
 - `bbox_xyxy` 是 canonical 像素坐标；`bbox_normalized_xyxy` 从同一个 geometry 计算。
 - Review 或 Final Fusion 失败时保留已有 YOLO observations；只要至少一个模块成功，后处理失败返回 `partial_success`。
@@ -103,11 +103,11 @@ Runtime v1 当前负责：
 ### 2. Prohibited Items Detector
 
 - 数据入口：`datasets_final/prohibited_items/data.yaml`。
-- 基础权重：`yolo11m.pt`。
-- 训练产物：独立的 prohibited_items YOLO11m。
+- 已有训练产物：独立的 prohibited_items YOLO11m，继续保留但不被本阶段删除或覆盖。
+- 当前 Runtime module：YOLO-World 开放词汇检测。
 - Pipeline 补充：`task_group: prohibited_items`。
 
-`roller_skates` 和 `barbecue_grill` 可能仍为 0 样本或待补充，训练前必须核对 3090 manifest / README。
+example 配置始终展示正式 8 类。当前 gitignored local 配置仅启用已有验证范围内的 6 类；`roller_skates` 和 `barbecue_grill` 待数据和模型能力补齐后恢复，不能伪造已具备能力。
 
 ### 3. Garbage Detector
 
@@ -116,7 +116,16 @@ Runtime v1 当前负责：
 - 训练产物：独立的 garbage YOLO11m。
 - Pipeline 补充：`task_group: garbage`。
 
-垃圾 detector 保持最终 Roboflow `data.yaml` 的 6 类 class id，不重新映射。
+垃圾 detector 复用现有 Ultralytics backend。模型路径、`expected_class_names`、confidence、IoU、imgsz 和 device 全部由 YAML 提供；权重加载时严格校验类别数量、名称和顺序。模型缺失或映射不一致必须明确失败，不允许回退到 YOLO-World。
+
+垃圾 detector 保持最终 Roboflow `data.yaml` 和 `garbage_best.pt` 的 6 类 class id，不重新映射：
+
+1. `crumpled_paper_ball`
+2. `disposable_food_container`
+3. `empty_cigarette_box`
+4. `plastic_drink_bottle`
+5. `plastic_food_wrapper`
+6. `rigid_takeout_bag`
 
 ### 4. Behavior Pipeline
 
@@ -144,11 +153,12 @@ YOLO-World 基础对象 observations
 
 ### 4.1 YOLO-World Object Backend
 
-YOLO-World 是现有 detector 集合中的可选 backend，不替代两个已训练 YOLO11m。它只负责 object-level detection，可在同一个模型实例中覆盖：
+YOLO-World 是现有 detector 集合中的 object-level backend，不删除已有 YOLO11m。当前同一个模型实例只覆盖：
 
 - `prohibited_items`：正式 8 类禁带品。
-- `garbage`：正式 6 类垃圾。
 - `uncivilized_behavior`：`person`、`bench`、`grass`、`cigarette`、`vehicle` 等行为判断需要的基础物体。
+
+`garbage` 不得出现在 YOLO-World `open_vocabulary_classes` 中；六类垃圾由独立 Ultralytics YOLO11m module 输出。
 
 `trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench` 不得作为 YOLO-World class。这些语义由 Behavior Pipeline 结合基础对象和全图 VLM 判断，后续可继续加入区域、姿态、关系和 tracking。
 
@@ -156,7 +166,7 @@ YOLO-World 是现有 detector 集合中的可选 backend，不替代两个已训
 
 ### 5. 多模型调度
 
-同一图片当前顺序运行 prohibited detector 和 garbage detector。模块由配置列表注册，后续 behavior module 可按相同接口加入，不需要改写主 Pipeline。
+同一图片当前顺序运行 YOLO-World object module 和 garbage YOLO11m module。两个模块由配置列表注册，其合法结果统一转成 observations 并进入同一个 Detection Summary，不需要改写主 Pipeline。
 
 待 Thor benchmark 后决定：
 
@@ -184,10 +194,10 @@ YOLO-World 是现有 detector 集合中的可选 backend，不替代两个已训
 
 `task_group` 来源映射：
 
-- prohibited_items model -> `prohibited_items`
-- garbage model -> `garbage`
+- YOLO-World prohibited class -> `prohibited_items`
+- YOLO-World behavior helper class -> `uncivilized_behavior`
+- garbage YOLO11m module -> `garbage`
 - behavior model / pipeline -> `uncivilized_behavior`
-- YOLO-World -> 按 `open_vocabulary_classes` 中每个 canonical 类别的显式映射确定，可由同一 backend 输出多个 task group
 
 不要求不同模型共享同一全局 class id，也不修改原数据集标签。
 

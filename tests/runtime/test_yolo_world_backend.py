@@ -82,10 +82,10 @@ class YOLOWorldBackendTests(unittest.TestCase):
                     ("spray can", "aerosol can"),
                 ),
                 YOLOWorldClassDefinition(
-                    "garbage",
-                    3,
-                    "plastic_drink_bottle",
-                    ("plastic drink bottle",),
+                    "uncivilized_behavior",
+                    0,
+                    "person",
+                    ("person",),
                 ),
             ],
             device="cpu",
@@ -118,23 +118,43 @@ class YOLOWorldBackendTests(unittest.TestCase):
         model = _FakeYOLOWorld.instances[0]
         self.assertEqual(
             model.set_classes_calls,
-            [["spray can", "aerosol can", "plastic drink bottle"]],
+            [["spray can", "aerosol can", "person"]],
         )
         self.assertIsNone(model.model.clip_model)
         self.assertEqual(len(prediction.detections), 2)
-        spray, bottle = prediction.detections
+        spray, person = prediction.detections
         self.assertEqual((spray.task_group, spray.class_id, spray.class_name), (
             "prohibited_items",
             0,
             "spray_can",
         ))
         self.assertEqual(spray.metadata["matched_prompt"], "spray can")
-        self.assertEqual((bottle.task_group, bottle.class_id, bottle.class_name), (
-            "garbage",
-            3,
-            "plastic_drink_bottle",
+        self.assertEqual((person.task_group, person.class_id, person.class_name), (
+            "uncivilized_behavior",
+            0,
+            "person",
         ))
         self.assertEqual(prediction.timing_ms, {"inference": 12.5})
+
+    def test_rejects_garbage_class_definitions(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must not provide garbage detections"):
+            YOLOWorldBackend(
+                model_path=Path("world.pt"),
+                module_id="world_objects",
+                model_id="yolov8s-worldv2",
+                classes=[
+                    YOLOWorldClassDefinition(
+                        "garbage",
+                        0,
+                        "plastic_drink_bottle",
+                        ("plastic drink bottle",),
+                    )
+                ],
+                device="cpu",
+                confidence=0.1,
+                iou=0.7,
+                imgsz=640,
+            )
 
     def test_missing_weight_does_not_create_or_download_model(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

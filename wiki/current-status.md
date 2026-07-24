@@ -6,6 +6,14 @@
 
 本轮已完成代码实现与 mock 自动测试，没有运行真实 Qwen2.5-VL、训练模型、修改数据集、安装依赖或 push。
 
+## Detection Module 分工 Phase 2
+
+- 单帧 Runtime 保持现有多模块 Pipeline，不重写主流程：同一图片依次进入 YOLO-World object module 和独立 garbage YOLO11m module，输出统一合并为 observations / Detection Summary。
+- YOLO-World 现在只负责正式 8 类禁带品和 `person`、`bench`、`grass`、`cigarette`、`vehicle` 五类行为辅助对象；配置与 backend 均明确拒绝 `task_group: garbage`。
+- 六类垃圾固定由现有 Ultralytics backend 加载 `garbage_best.pt`。权重元数据已核对为 `crumpled_paper_ball`、`disposable_food_container`、`empty_cigarette_box`、`plastic_drink_bottle`、`plastic_food_wrapper`、`rigid_takeout_bag`，顺序为 ID 0 至 5。
+- example 配置表达正式 8 类禁带品；gitignored 的 `runtime.yolo-world.local.yaml` 暂时只启用已验证的 6 类禁带品，并明确保留 `roller_skates`、`barbecue_grill` 的正式定义待后续补齐。
+- 本阶段未修改 Dual Pass、Crop Scan、VLM finding bbox、Preview、Parser/Fusion 语义、TensorRT、权重、数据集或训练代码。
+
 ## Runtime Review/Fusion Phase 1
 
 - VLM Response Parser 已改为逐项容错：`yolo_reviews`、`new_findings`、`behavior_reviews` 分别解析，非法条目跳过并记录结构化 `ReviewIssue`，合法兄弟条目继续保留。
@@ -48,7 +56,8 @@
 
 ```text
 完整图片
-  -> prohibited_items / garbage / behavior object detection
+  -> YOLO-World prohibited_items / behavior object detection
+  -> Ultralytics YOLO11m garbage detection
   -> Detection Summary + behavior candidates
   -> 一次可选 Qwen2.5-VL 全图 Review
   -> object review + missed objects + behavior review/full-image scan
@@ -59,7 +68,7 @@
 
 已实现：
 
-- 配置驱动的通用 task modules，当前接入 `prohibited_items` 和 `garbage`。
+- 配置驱动的通用 task modules，当前由 YOLO-World 提供 `prohibited_items` / behavior 基础对象，由独立 Ultralytics YOLO11m 提供 `garbage`。
 - Ultralytics backend 启动时加载一次模型，并严格校验 `expected_class_names`。
 - 单模块故障隔离、稳定 observation ID、跨 task group 冲突保留与标记。
 - Detection Summary，向 VLM 提供 YOLO 语义上下文，但不限制 VLM 的全图观察范围。
@@ -85,7 +94,7 @@
 
 ## 验证状态
 
-- 自动测试：79 项通过。
+- 自动测试：83 项通过（Phase 2 完成后）。
 - Python `compileall`：通过。
 - `git diff --check`：通过。
 - Qwen 请求测试使用 mock HTTP，确认发送完整图片 data URL 和 Detection Summary prompt，没有访问真实服务。

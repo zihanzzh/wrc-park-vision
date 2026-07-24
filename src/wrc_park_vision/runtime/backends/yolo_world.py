@@ -61,6 +61,11 @@ class YOLOWorldBackend(InferenceBackend):
     ) -> None:
         if not classes:
             raise ValueError("YOLO-World requires at least one object class definition")
+        if any(item.task_group == "garbage" for item in classes):
+            raise ValueError(
+                "YOLO-World must not provide garbage detections; "
+                "use the dedicated Ultralytics garbage module"
+            )
         self.model_path = model_path
         self.module_id = module_id
         self.model_id = model_id

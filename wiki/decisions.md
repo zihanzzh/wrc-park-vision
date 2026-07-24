@@ -182,8 +182,8 @@
 
 ### D031：YOLO-World 作为可选的分组物体检测 backend
 
-- 日期：2026-07-21
-- 决策：新增 `yolo_world` backend，但不替换现有 YOLO11m。它可检测禁带品 8 类、垃圾 6 类和行为判断需要的基础物体，并将每条结果规范化为显式 `task_group`、组内 class ID 和 canonical class name。
+- 日期：2026-07-21，2026-07-23 Phase 2 更新
+- 决策：新增 `yolo_world` backend，但不删除现有 YOLO11m。当前只用它检测禁带品 8 类和行为判断需要的基础物体，不再检测垃圾；每条结果规范化为显式 `task_group`、组内 class ID 和 canonical class name。
 - 说明：YOLO-World 只负责 object-level detection。踩踏草坪、吸烟、占用消防通道、站立/躺在长椅等行为不作为其 class，后续由独立 Behavior Pipeline 处理。Qwen Review 继续接收统一 Detection Summary，无需 backend-specific 分支。
 
 ### D032：单图行为复用现有一次全图 VLM Review
@@ -203,6 +203,13 @@
 - 日期：2026-07-23
 - 决策：`uncertain_policy` 和 `review_failure_policy` 默认均为 `keep_flagged`。
 - 说明：不确定或未完成审核的 YOLO 结果不会被静默视为 confirmed；最终 observation 保持 pending 并记录原因，FusionDecision 显式记录对应动作。
+
+### D035：垃圾检测从 YOLO-World 分离
+
+- 日期：2026-07-23
+- 决策：六类垃圾只由独立 Ultralytics YOLO11m detection module 负责；YOLO-World 配置和 backend 都拒绝 `task_group: garbage`。
+- 说明：garbage 模型路径、`expected_class_names`、confidence、IoU、imgsz 和 device 均由 YAML 配置。启动时使用真实权重元数据严格校验数量、名称与顺序，不允许缺失或不匹配时回退到 YOLO-World。
+- 类别真源：当前 `garbage_best.pt` 已核对为 `crumpled_paper_ball`、`disposable_food_container`、`empty_cigarette_box`、`plastic_drink_bottle`、`plastic_food_wrapper`、`rigid_takeout_bag`，与 [[class-list]] 一致。
 
 ## 被替代的历史方案
 

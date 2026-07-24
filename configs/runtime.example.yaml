@@ -3,31 +3,96 @@ runtime:
   output_dir: runtime_outputs
 
 modules:
-  # YOLO-World 的 open_vocabulary_classes 可选写法：
-  # visual_description: "平板式板面下方有轮子。"
-  # distinguishing_rules: ["没有直立转向杆或车把。"]
-  # 完整 19 类示例见 configs/runtime.yolo-world.example.yaml。
-  - id: prohibited_items
+  # 正式结构：YOLO-World 只负责 8 类禁带品和行为辅助对象，不负责垃圾。
+  - id: yolo_world_objects
     enabled: true
     type: detection
-    task_group: prohibited_items
-    backend: ultralytics
-    model_path: ${WRC_PROHIBITED_MODEL_PATH}
-    model_id: prohibited_items_yolo11m
-    expected_class_names:
-      - spray_can
-      - portable_gas_stove
-      - megaphone
-      - skateboard
-      - kick_scooter
-      - speaker
-      - roller_skates
-      - barbecue_grill
+    task_group: object_detection
+    backend: yolo_world
+    model_path: ${WRC_YOLO_WORLD_MODEL_PATH}
+    model_id: yolov8s-worldv2
+    open_vocabulary_classes:
+      - task_group: prohibited_items
+        class_id: 0
+        class_name: spray_can
+        prompts: [spray can, aerosol can]
+        visual_description: "带喷嘴或喷头的加压气雾罐。"
+        distinguishing_rules: ["普通饮料罐不是 spray_can。"]
+      - task_group: prohibited_items
+        class_id: 1
+        class_name: portable_gas_stove
+        prompts: [portable gas stove, butane stove, camping stove]
+        visual_description: "小型桌面炉具，可见燃烧器、锅架或气罐舱。"
+        distinguishing_rules: ["不是带烤网的开放式 barbecue_grill。"]
+      - task_group: prohibited_items
+        class_id: 2
+        class_name: megaphone
+        prompts: [megaphone]
+        visual_description: "手持锥形扩音器，可见前端喇叭口和握柄。"
+        distinguishing_rules: ["不是箱体或网罩结构的 speaker。"]
+      - task_group: prohibited_items
+        class_id: 3
+        class_name: skateboard
+        prompts: [skateboard]
+        visual_description: "平板式板面下方有轮子。"
+        distinguishing_rules: ["没有直立转向杆或车把。"]
+      - task_group: prohibited_items
+        class_id: 4
+        class_name: kick_scooter
+        prompts: [children's scooter, kids scooter, kick scooter]
+        visual_description: "站立踏板连接直立转向杆，顶部有车把。"
+        distinguishing_rules: ["不是无车把的平板 skateboard。"]
+      - task_group: prohibited_items
+        class_id: 5
+        class_name: speaker
+        prompts: [speaker, portable speaker, bluetooth speaker]
+        visual_description: "便携音箱或扩音设备，可见扬声器网罩、箱体或控制区域。"
+        distinguishing_rules: ["不能仅凭电子设备外观判断。"]
+      - task_group: prohibited_items
+        class_id: 6
+        class_name: roller_skates
+        prompts: [roller skates]
+        visual_description: "穿在脚上的带轮鞋。"
+        distinguishing_rules: ["不是 skateboard 或 kick_scooter。"]
+      - task_group: prohibited_items
+        class_id: 7
+        class_name: barbecue_grill
+        prompts: [barbecue grill, charcoal grill]
+        visual_description: "开放式烧烤炉体，可见烤网或炭火结构。"
+        distinguishing_rules: ["不是小型桌面 portable_gas_stove。"]
+      - task_group: uncivilized_behavior
+        class_id: 0
+        class_name: person
+        prompts: [person]
+        visual_description: "可见人体或主要身体轮廓。"
+      - task_group: uncivilized_behavior
+        class_id: 1
+        class_name: bench
+        prompts: [bench, park bench]
+        visual_description: "供人坐卧的长条座面，通常有支腿或靠背。"
+      - task_group: uncivilized_behavior
+        class_id: 2
+        class_name: grass
+        prompts: [grass, lawn]
+        visual_description: "连续草叶覆盖的草坪或草地区域。"
+        distinguishing_rules: ["不能只凭绿色区域判断。"]
+      - task_group: uncivilized_behavior
+        class_id: 3
+        class_name: cigarette
+        prompts: [cigarette]
+        visual_description: "细小柱状香烟，可见滤嘴或燃烧端。"
+        distinguishing_rules: ["香烟盒不是单支 cigarette。"]
+      - task_group: uncivilized_behavior
+        class_id: 4
+        class_name: vehicle
+        prompts: [vehicle, car]
+        visual_description: "可载人或货物的车辆主体，可见车身和车轮。"
     device: auto
-    confidence: 0.25
-    iou: 0.7
+    confidence: 0.10
+    iou: 0.70
     imgsz: 640
 
+  # 垃圾固定使用独立 YOLO11m；类别顺序必须与 garbage_best.pt 完全一致。
   - id: garbage
     enabled: true
     type: detection
@@ -44,7 +109,7 @@ modules:
       - rigid_takeout_bag
     device: auto
     confidence: 0.25
-    iou: 0.7
+    iou: 0.70
     imgsz: 640
 
 behavior:

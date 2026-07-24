@@ -64,6 +64,11 @@ class OpenVocabularyClassSettings(BaseModel):
                 f"behavior action {self.class_name} must be handled by the Behavior Pipeline, "
                 "not configured as a YOLO-World object class"
             )
+        if self.task_group == "garbage":
+            raise ValueError(
+                "YOLO-World must not provide garbage detections; "
+                "configure the dedicated Ultralytics garbage module instead"
+            )
         return self
 
 

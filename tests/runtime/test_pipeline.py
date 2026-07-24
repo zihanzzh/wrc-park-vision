@@ -83,7 +83,7 @@ class PipelineTests(unittest.TestCase):
                 )
 
         provider = CapturingReviewProvider()
-        backend = FakeBackend(
+        world_backend = FakeBackend(
             "world",
             [
                 BackendDetection(
@@ -93,21 +93,21 @@ class PipelineTests(unittest.TestCase):
                     (10, 10, 30, 40),
                     task_group="prohibited_items",
                 ),
-                BackendDetection(
-                    3,
-                    "plastic_drink_bottle",
-                    0.8,
-                    (50, 10, 70, 50),
-                    task_group="garbage",
-                ),
             ],
         )
-        module = DetectionModule("world", "object_detection", "world", backend)
+        garbage_backend = FakeBackend(
+            "garbage_yolo11m",
+            [BackendDetection(3, "plastic_drink_bottle", 0.8, (50, 10, 70, 50))],
+        )
+        modules = [
+            DetectionModule("world", "object_detection", "world", world_backend),
+            DetectionModule("garbage", "garbage", "garbage_yolo11m", garbage_backend),
+        ]
         with tempfile.TemporaryDirectory() as directory:
             image_path = write_test_image(Path(directory) / "image.jpg")
             response = RuntimePipeline(
-                make_config(("world",)),
-                [module],
+                make_config(("world", "garbage")),
+                modules,
                 review_provider=provider,
             ).process(image_path)
 
@@ -143,35 +143,75 @@ class PipelineTests(unittest.TestCase):
                                 "distinguishing_rules": ["普通饮料罐不是喷雾罐。"],
                             },
                             {
-                                "task_group": "garbage",
+                                "task_group": "uncivilized_behavior",
                                 "class_id": 0,
-                                "class_name": "plastic_drink_bottle",
-                                "prompts": ["plastic drink bottle"],
+                                "class_name": "person",
+                                "prompts": ["person"],
                             },
                         ],
-                    }
+                    },
+                    {
+                        "id": "garbage",
+                        "enabled": True,
+                        "type": "detection",
+                        "task_group": "garbage",
+                        "backend": "ultralytics",
+                        "model_path": Path("garbage.pt"),
+                        "model_id": "garbage_yolo11m",
+                        "expected_class_names": [
+                            "crumpled_paper_ball",
+                            "disposable_food_container",
+                            "empty_cigarette_box",
+                            "plastic_drink_bottle",
+                            "plastic_food_wrapper",
+                            "rigid_takeout_bag",
+                        ],
+                    },
                 ]
             }
         )
 
-        with patch("wrc_park_vision.runtime.pipeline.YOLOWorldBackend") as backend_class:
+        with (
+            patch("wrc_park_vision.runtime.pipeline.YOLOWorldBackend") as world_backend_class,
+            patch("wrc_park_vision.runtime.pipeline.UltralyticsBackend") as garbage_backend_class,
+        ):
             modules = build_modules(config)
 
-        self.assertEqual(len(modules), 1)
-        backend_class.assert_called_once()
-        definitions = backend_class.call_args.kwargs["classes"]
+        self.assertEqual(len(modules), 2)
+        world_backend_class.assert_called_once()
+        garbage_backend_class.assert_called_once()
+        definitions = world_backend_class.call_args.kwargs["classes"]
         self.assertEqual(
             [(item.task_group, item.class_id, item.class_name) for item in definitions],
             [
                 ("prohibited_items", 0, "spray_can"),
-                ("garbage", 0, "plastic_drink_bottle"),
+                ("uncivilized_behavior", 0, "person"),
+            ],
+        )
+        self.assertEqual(
+            garbage_backend_class.call_args.kwargs["expected_class_names"],
+            [
+                "crumpled_paper_ball",
+                "disposable_food_container",
+                "empty_cigarette_box",
+                "plastic_drink_bottle",
+                "plastic_food_wrapper",
+                "rigid_takeout_bag",
             ],
         )
         self.assertEqual(
             build_class_catalog(config),
             {
                 "prohibited_items": ["spray_can"],
-                "garbage": ["plastic_drink_bottle"],
+                "uncivilized_behavior": ["person"],
+                "garbage": [
+                    "crumpled_paper_ball",
+                    "disposable_food_container",
+                    "empty_cigarette_box",
+                    "plastic_drink_bottle",
+                    "plastic_food_wrapper",
+                    "rigid_takeout_bag",
+                ],
             },
         )
         self.assertEqual(

@@ -2,6 +2,24 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-07-23 Detection Module 分工 Phase 2
+
+本阶段只整理单帧 Runtime 的 detection modules 与配置，没有进入 Dual Pass、Crop Scan、VLM finding bbox、Preview、TensorRT、训练或部署：
+
+- 保留现有配置驱动多模块 Pipeline，没有重写 `RuntimePipeline`、`DetectionModule` 或 Ultralytics 推理实现。
+- YOLO-World 只保留正式 8 类禁带品和 5 类行为辅助对象；配置模型与 backend 构造器均拒绝 `task_group: garbage`。
+- 新架构通过第二个通用 `DetectionModule` 加载独立 garbage YOLO11m；模型路径、类别顺序、confidence、IoU、imgsz 和 device 均来自 YAML。
+- 实际读取 `weights/garbage_best.pt` 元数据，确认 0 至 5 顺序为 `crumpled_paper_ball`、`disposable_food_container`、`empty_cigarette_box`、`plastic_drink_bottle`、`plastic_food_wrapper`、`rigid_takeout_bag`，与 [[class-list]] 一致。
+- `runtime.example.yaml` 和 `runtime.yolo-world.example.yaml` 展示正式 8 类禁带品 + 5 类行为辅助对象，以及独立 6 类 garbage module。
+- gitignored 的 `runtime.yolo-world.local.yaml` 暂时使用 6 类禁带品 + 5 类行为辅助对象，并明确 `roller_skates` / `barbecue_grill` 待补齐；garbage 使用本地 `garbage_best.pt`。
+- 两个合法模块的 observations 继续统一进入稳定排序、Detection Summary、Review 和 Fusion；单模块旧配置仍能加载。
+
+验证结果：
+
+- 全部 Runtime `unittest` 83 项通过，Phase 1 的 79 项无回归。
+- `compileall` 与 `git diff --check` 通过。
+- 本次只读取 garbage 权重元数据用于核对类别，没有运行图片推理、训练模型、修改权重/数据集、安装依赖、commit 或 push。
+
 ## 2026-07-23 Runtime Review/Fusion 重构 Phase 1
 
 本阶段只整理单帧 Runtime 的 Review/Fusion 契约，没有修改 detection modules、Pipeline 主流程、Preview、Crop、双 Pass、训练或部署：

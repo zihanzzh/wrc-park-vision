@@ -37,8 +37,8 @@
 
 - 机器人只发送图片，不发送 `taskId`、`taskType`、`mode` 或 `category`。
 - 正式 Runtime v1 已实现配置加载、输入校验、模块注册、顺序执行、模块故障隔离、统一 schema、冲突标记、review decision、JSON、Preview 和 CLI。
-- `prohibited_items` 与 `garbage` 通过配置注册为通用 `DetectionModule`，主 Pipeline 不写死模型数量、类别或路径。
-- 可选 YOLO-World backend 可在同一模型中输出禁带品、垃圾和行为相关基础对象，并保留每条 detection 的 `task_group`。
+- YOLO-World 与独立 garbage YOLO11m 通过配置注册为通用 `DetectionModule`，主 Pipeline 不写死模型数量、类别或路径。
+- YOLO-World 只输出禁带品和行为相关基础对象；六类垃圾由独立 Ultralytics YOLO11m 模块负责，两者都保留每条 detection 的 `task_group`。
 - 模型启动时加载一次；enabled 模型路径缺失时明确失败，不允许自动下载。
 - enabled detection module 必须声明有序 `expected_class_names`；Ultralytics 权重加载后、图片处理前严格校验类别 ID、数量、名称和顺序。
 - Pipeline 根据模型来源写入 `task_group`，不同模型保留各自 class id 空间。
