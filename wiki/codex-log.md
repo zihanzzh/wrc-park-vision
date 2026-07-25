@@ -2,6 +2,41 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-07-24 Runtime V3 候选审核输出收敛
+
+针对 V3 Prompt 要求 Qwen 为全部 detector observations 输出 `yolo_reviews`、可能增加输出 token 与超时风险的问题，本次做了严格限域修正：
+
+- 从 `MultiImageReviewRequest.candidates` 收集并去重必审 observation ID，顺序与完整 Detection Summary 保持一致。
+- Prompt 的 `yolo_reviews` 模板只包含必审 ID，并明确每个必审 ID 恰好返回一次；未列入的 detection 不需要输出 decision。
+- Detection Summary 继续完整发送，用于全图理解、漏检检查和行为判断。
+- Provider 将同一必审集合传给逐项容错 Parser；Parser 只报告必审项缺失，同时仍允许行为证据引用完整 Summary 中的 observation。
+- 保留 Runtime V3 单请求、重点 crop、Pipeline 和 Fusion 业务流程，没有增加第二次 VLM 请求。
+
+验证结果：
+
+- 全部 Runtime `unittest` 113 项通过。
+- `compileall` 与 `git diff --check` 通过。
+- 本次没有运行真实模型、安装依赖、修改权重/数据集、commit 或 push。
+
+## 2026-07-24 Runtime V3 单次 Multi-Image Review
+
+根据 Thor 延迟测试，V2 顺序执行 Full Image Review 与 Crop Scan Review 无法稳定满足比赛时间预算。本次只重构单帧 Runtime Review 架构，没有修改 detection backend、Fusion 业务语义、模型、权重、数据集、训练、多帧或 TensorRT：
+
+- 删除 V2 固定网格 `crops.py` 和双请求 Pipeline 编排。
+- 将 `review.py` 拆为 `runtime/review/` 包，分别负责 Review policy、候选选择、重点 crop 生成和单次多图请求结构。
+- 候选来源为低置信、跨模型冲突、小目标和 behavior candidates；crop 围绕候选扩展、合并，并配置化限制为最多 5 个。
+- Qwen provider 每张图片只发送一次 HTTP 请求，请求包含原始图片、全部重点 crops、Detection Summary 和 crop/candidate 元数据。
+- 统一 Prompt 在一次响应中完成 YOLO review、漏检发现和四类行为判断。
+- Runtime V3 要求所有 VLM finding bbox 使用原图 normalized 坐标；`crop_id` 只记录参考 crop，不再进行 crop-local 坐标映射。
+- `review.multi_image`、`candidate_selection` 和 `important_crops` 已加入 example 与 gitignored local 配置；旧 V2 pass 配置可迁移为单次请求。
+- Parser 的逐项容错、corrected 复用 YOLO bbox、Fusion IoU 去重和 detector-only 降级继续保留。
+
+验证结果：
+
+- 全部 Runtime `unittest` 109 项通过。
+- `compileall` 与 `git diff --check` 通过。
+- 本次没有调用真实 YOLO/Qwen、安装依赖、修改权重/数据集、commit 或 push；Runtime V3 仍需在 Thor 上实测单次多图延迟和准确率。
+
 ## 2026-07-23 Runtime Dual Pass / Crop Scan 最终阶段
 
 本阶段在 Phase 1 Review/Fusion 与 Phase 2 Detection Module 分工之上完成单帧 Runtime 剩余整合，没有修改 detector backend 推理、模型、数据集、训练、TensorRT 或多帧逻辑：

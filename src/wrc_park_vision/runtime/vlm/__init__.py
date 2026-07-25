@@ -1,4 +1,4 @@
-"""Full-image VLM review providers."""
+"""Runtime V3 multi-image VLM review providers."""
 
 from .base import ReviewProvider
 from .qwen25 import Qwen25VLProvider

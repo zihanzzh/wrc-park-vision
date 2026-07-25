@@ -278,7 +278,9 @@ class BehaviorPipelineTests(unittest.TestCase):
         self.assertEqual(response.status, "partial_success")
         self.assertEqual(len(response.observations), 2)
         self.assertFalse(any(item.kind == "behavior" for item in response.observations))
-        self.assertTrue(any(error.code == "review_failure" for error in response.errors))
+        self.assertTrue(
+            any(error.code == "multi_image_review_failure" for error in response.errors)
+        )
 
     def test_provider_disabled_keeps_candidate_pending_without_behavior(self) -> None:
         response = self.run_pipeline(

@@ -310,8 +310,9 @@ class PreviewTests(unittest.TestCase):
                 ("kick_scooter", "corrected", (55, 30, 95, 70)),
                 ("plastic_drink_bottle", "vlm-full", (105, 30, 145, 70)),
                 ("empty_cigarette_box", "vlm-crop", (155, 30, 195, 70)),
-                ("portable_gas_stove", "uncertain", (205, 30, 245, 70)),
-                ("megaphone", "review-failed", (255, 30, 295, 70)),
+                ("crumpled_paper_ball", "vlm-multi", (205, 30, 245, 70)),
+                ("portable_gas_stove", "uncertain", (255, 30, 295, 70)),
+                ("megaphone", "review-failed", (5, 110, 45, 150)),
             ]
             for index, (class_name, status, bbox) in enumerate(specs):
                 observation = make_observation(
@@ -335,6 +336,8 @@ class PreviewTests(unittest.TestCase):
                     observation.metadata["geometry_source"] = "vlm_full_image"
                 elif status == "vlm-crop":
                     observation.metadata["geometry_source"] = "vlm_crop"
+                elif status == "vlm-multi":
+                    observation.metadata["geometry_source"] = "vlm_multi_image"
                 elif status == "uncertain":
                     observation.review = ObservationReview(
                         required=True,

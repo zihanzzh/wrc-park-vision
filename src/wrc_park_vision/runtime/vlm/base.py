@@ -1,31 +1,29 @@
-"""Provider contract for semantic full-image review."""
+"""Provider contract for Runtime V3 semantic review."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
-from ..crops import ImageCrop
-from ..schemas import DetectionSummary, ReviewSummary, VLMReviewResult, ValidatedImage
+from ..schemas import DetectionSummary, VLMReviewResult, ValidatedImage
+
+if TYPE_CHECKING:
+    from ..review.multi_image_request import MultiImageReviewRequest
 
 
 class ReviewProvider(ABC):
-    """Inspect a full image using detection output only as context."""
-
-    supports_crop_scan = False
+    """Inspect the original image, with optional focused crops, in one request."""
 
     @abstractmethod
     def review(self, image: ValidatedImage, summary: DetectionSummary) -> VLMReviewResult:
-        """Run the full-image review pass."""
+        """Backward-compatible original-image-only entry point."""
 
-    def review_crops(
+    def review_multi_image(
         self,
-        crops: list[ImageCrop],
-        image: ValidatedImage,
-        summary: DetectionSummary,
-        full_image_review: ReviewSummary,
+        request: "MultiImageReviewRequest",
     ) -> VLMReviewResult:
-        """Run one crop-scan request containing all crops."""
-        raise NotImplementedError("review provider does not support crop scan")
+        """Run one request; legacy providers safely receive the original image."""
+        return self.review(request.image, request.summary)
 
     def close(self) -> None:
         """Release provider resources when needed."""

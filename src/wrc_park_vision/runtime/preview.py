@@ -26,6 +26,8 @@ def _observation_display_source(observation: object) -> str:
         return "vlm-full"
     if geometry_source == "vlm_crop":
         return "vlm-crop"
+    if geometry_source == "vlm_multi_image":
+        return "vlm-multi"
     if review is not None:
         if "review_item_missing_or_failed" in review.reasons:
             return "review-failed"

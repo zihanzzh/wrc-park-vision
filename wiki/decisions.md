@@ -190,7 +190,7 @@
 
 - 日期：2026-07-23
 - 决策：正式行为类别固定为 `trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。YOLO-World 基础对象组合只生成 candidate，最终行为必须由现有同一次全图 VLM 请求确认。
-- 说明：行为仍只由 Full Image Pass 判断；“每张图片最多一次 VLM”已被 D036 的双 Pass 方案替代。没有基础对象时仍允许 Full Image Pass 发现明显行为。
+- 说明：行为与 object review 共用一次 VLM 请求；该单请求原则已由 D039 的 Multi-Image Review 恢复。没有基础对象时仍允许从原图发现明显行为。
 
 ### D033：VLM Response 使用逐项容错解析
 
@@ -211,23 +211,31 @@
 - 说明：garbage 模型路径、`expected_class_names`、confidence、IoU、imgsz 和 device 均由 YAML 配置。启动时使用真实权重元数据严格校验数量、名称与顺序，不允许缺失或不匹配时回退到 YOLO-World。
 - 类别真源：当前 `garbage_best.pt` 已核对为 `crumpled_paper_ball`、`disposable_food_container`、`empty_cigarette_box`、`plastic_drink_bottle`、`plastic_food_wrapper`、`rigid_takeout_bag`，与 [[class-list]] 一致。
 
-### D036：单帧 Review 固定使用 Full Image 与 Crop Scan 双 Pass
+### D036：单帧 Review 固定使用 Full Image 与 Crop Scan 双 Pass（已被 D039 替代）
 
 - 日期：2026-07-23
 - 决策：Qwen provider 启用且两个 Pass 均开启时，每张图片固定执行两次请求。Pass 1 接收完整原图，负责 YOLO review、明显漏检和行为；Pass 2 在一次请求中接收全部重叠 crops，只做独立漏检扫描。
-- 说明：两个 Pass 使用不同 Prompt，但共享同一 Response Schema 和逐项容错 Parser。Pass 2 不依赖 Pass 1 是否成功或发现目标。
+- 说明：真实测试显示顺序双请求无法稳定满足比赛时间预算，因此该编排不再使用。
 
-### D037：VLM 新 finding 必须携带 normalized bbox
+### D037：VLM 新 finding 必须携带 normalized bbox（坐标规则已由 D039 更新）
 
 - 日期：2026-07-23
 - 决策：Full Image finding 返回原图 normalized bbox；Crop finding 返回 `crop_id` 与 crop 内 normalized bbox。Pipeline 负责校验、裁剪和映射为完整原图 geometry。
-- 说明：VLM 不得修改 YOLO detection 的 bbox；corrected 继续复用原框。单条非法 bbox 只丢弃该 finding 并记录 `ReviewIssue`。
+- 说明：crop-local 坐标已停止使用。corrected 仍复用 YOLO 原框；Runtime V3 finding 坐标统一遵循 D039。
 
 ### D038：跨来源 finding 使用配置化 IoU 去重
 
 - 日期：2026-07-23
 - 决策：YOLO、Full Image finding 和 Crop finding 的同 task/class 高 IoU 结果合并，默认阈值 0.65；保留经过确认或置信度更高的结果及来源追踪。
 - 说明：不同类别高 IoU 结果不能静默删除，双方保留并记录 conflict / fusion decision。Preview 只绘制最终 observations 中的同一份 geometry。
+
+### D039：Runtime V3 使用单次 Multi-Image Review
+
+- 日期：2026-07-24
+- 决策：每张图片最多调用一次 Qwen / VLM。请求同时包含原始图片、Detection Summary、behavior candidates 和最多 5 个候选驱动重点 crops。
+- 说明：重点 crops 只围绕低置信、跨模型冲突、小目标和行为候选生成，并在发送前合并重叠区域；不再使用固定网格或第二次 VLM 请求。
+- 坐标：所有 VLM `new_findings.bbox_normalized_xyxy` 必须相对原始完整图片。`crop_id` 只记录视觉参考，不参与坐标转换。
+- 兼容：detector-only Pipeline、现有 Parser 逐项容错、Fusion verdict 语义、Behavior 类别和输出 schema 主体保持不变。V2 配置仅迁移到 V3 参数，不恢复双请求。
 
 ## 被替代的历史方案
 

@@ -1,4 +1,4 @@
-"""OpenAI-compatible Qwen2.5-VL full-image review provider."""
+"""OpenAI-compatible Qwen2.5-VL Runtime V3 multi-image provider."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ import urllib.request
 from io import BytesIO
 from typing import Any
 
-from ..config import CropScanSettings, ReviewProviderSettings, ReviewSettings
-from ..crops import ImageCrop
-from ..schemas import DetectionSummary, ReviewSummary, VLMReviewResult, ValidatedImage
+from ..config import ReviewProviderSettings, ReviewSettings
+from ..review.multi_image_request import MultiImageReviewRequest
+from ..schemas import DetectionSummary, VLMReviewResult, ValidatedImage
 from .base import ReviewProvider
 from .parser import ReviewResponseError, parse_review_response
-from .prompt import build_crop_scan_prompt, build_full_image_prompt
+from .prompt import build_multi_image_prompt
 
 
 RAW_RESPONSE_EXCERPT_LIMIT = 512
@@ -30,7 +30,7 @@ def _raw_response_excerpt(content: str) -> str:
 
 
 class Qwen25VLProvider(ReviewProvider):
-    """Call a configured Qwen2.5-VL endpoint with the complete decoded image."""
+    """Send the original image and focused crops in one VLM request."""
 
     def __init__(
         self,
@@ -95,6 +95,7 @@ class Qwen25VLProvider(ReviewProvider):
         timeout_seconds: float,
         max_tokens: int,
         valid_crop_ids: set[str] | None = None,
+        required_review_observation_ids: tuple[str, ...] | None = None,
     ) -> VLMReviewResult:
         started = time.perf_counter()
         headers = {"Content-Type": "application/json"}
@@ -127,6 +128,7 @@ class Qwen25VLProvider(ReviewProvider):
                     else False
                 ),
                 valid_crop_ids=valid_crop_ids,
+                required_review_observation_ids=required_review_observation_ids,
             )
         except ReviewResponseError as exc:
             excerpt = _raw_response_excerpt(content)
@@ -145,7 +147,34 @@ class Qwen25VLProvider(ReviewProvider):
         )
 
     def review(self, image: ValidatedImage, summary: DetectionSummary) -> VLMReviewResult:
-        pass_settings = self.review_settings.full_image if self.review_settings else None
+        request = MultiImageReviewRequest(image=image, summary=summary)
+        return self._review_multi_image(
+            request,
+            required_review_observation_ids=tuple(
+                item.observation_id for item in summary.detections
+            ),
+        )
+
+    def review_multi_image(
+        self,
+        request: MultiImageReviewRequest,
+    ) -> VLMReviewResult:
+        return self._review_multi_image(
+            request,
+            required_review_observation_ids=request.required_review_observation_ids,
+        )
+
+    def _review_multi_image(
+        self,
+        request: MultiImageReviewRequest,
+        *,
+        required_review_observation_ids: tuple[str, ...],
+    ) -> VLMReviewResult:
+        pass_settings = (
+            self.review_settings.multi_image
+            if self.review_settings is not None
+            else None
+        )
         timeout_seconds = (
             pass_settings.timeout_seconds
             if pass_settings is not None and pass_settings.timeout_seconds is not None
@@ -156,51 +185,23 @@ class Qwen25VLProvider(ReviewProvider):
             if pass_settings is not None and pass_settings.max_tokens is not None
             else self.settings.max_tokens
         )
-        return self._request(
-            content_parts=[
-                {"type": "image_url", "image_url": {"url": self._image_data_url(image)}},
-                {
-                    "type": "text",
-                    "text": build_full_image_prompt(
-                        summary,
-                        self.class_catalog,
-                        visual_class_guide=self.visual_class_guide,
-                    ),
-                },
-            ],
-            summary=summary,
-            review_pass="full_image",
-            timeout_seconds=timeout_seconds,
-            max_tokens=max_tokens,
-        )
-
-    def review_crops(
-        self,
-        crops: list[ImageCrop],
-        image: ValidatedImage,
-        summary: DetectionSummary,
-        full_image_review: ReviewSummary,
-    ) -> VLMReviewResult:
-        settings = (
-            self.review_settings.crop_scan
-            if self.review_settings is not None
-            else CropScanSettings()
-        )
-        timeout_seconds = settings.timeout_seconds or self.settings.timeout_seconds
-        max_tokens = settings.max_tokens or self.settings.max_tokens
         content_parts: list[dict[str, Any]] = [
             {
                 "type": "text",
-                "text": build_crop_scan_prompt(
-                    summary,
+                "text": build_multi_image_prompt(
+                    request,
                     self.class_catalog,
-                    crops,
-                    full_image_review,
                     visual_class_guide=self.visual_class_guide,
+                    required_review_observation_ids=required_review_observation_ids,
                 ),
-            }
+            },
+            {"type": "text", "text": "image_id=original_image"},
+            {
+                "type": "image_url",
+                "image_url": {"url": self._image_data_url(request.image)},
+            },
         ]
-        for crop in crops:
+        for crop in request.crops:
             content_parts.extend(
                 [
                     {"type": "text", "text": f"crop_id={crop.crop_id}"},
@@ -209,10 +210,10 @@ class Qwen25VLProvider(ReviewProvider):
             )
         return self._request(
             content_parts=content_parts,
-            summary=summary,
-            review_pass="crop_scan",
+            summary=request.summary,
+            review_pass="multi_image",
             timeout_seconds=timeout_seconds,
             max_tokens=max_tokens,
-            valid_crop_ids={crop.crop_id for crop in crops},
+            valid_crop_ids={crop.crop_id for crop in request.crops},
+            required_review_observation_ids=required_review_observation_ids,
         )
-    supports_crop_scan = True

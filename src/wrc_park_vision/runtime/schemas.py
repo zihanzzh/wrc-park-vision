@@ -16,8 +16,8 @@ ReviewStatus = Literal["not_required", "pending", "confirmed", "rejected"]
 ReviewExecutionStatus = Literal["not_required", "pending", "completed", "failed"]
 ReviewVerdict = Literal["confirmed", "rejected", "corrected", "uncertain"]
 BehaviorVerdict = Literal["confirmed", "rejected", "uncertain"]
-ReviewPassId = Literal["full_image", "crop_scan"]
-FindingGeometrySource = Literal["vlm_full_image", "vlm_crop"]
+ReviewPassId = Literal["full_image", "crop_scan", "multi_image"]
+FindingGeometrySource = Literal["vlm_full_image", "vlm_crop", "vlm_multi_image"]
 FusionStatus = Literal["not_run", "completed", "fallback"]
 FusionAction = Literal[
     "keep_yolo",
@@ -255,11 +255,15 @@ class VLMFinding(BaseModel):
                 raise ValueError("full-image finding must not include crop_id")
             if self.geometry_source != "vlm_full_image":
                 raise ValueError("full-image finding requires geometry_source=vlm_full_image")
-        else:
+        elif self.review_pass == "crop_scan":
             if not self.crop_id:
                 raise ValueError("crop-scan finding requires crop_id")
             if self.geometry_source != "vlm_crop":
                 raise ValueError("crop-scan finding requires geometry_source=vlm_crop")
+        elif self.geometry_source != "vlm_multi_image":
+            raise ValueError(
+                "multi-image finding requires geometry_source=vlm_multi_image"
+            )
         return self
 
 
@@ -314,7 +318,13 @@ class FusionDecision(BaseModel):
     original_class_name: Optional[str] = None
     final_task_group: Optional[str] = None
     final_class_name: Optional[str] = None
-    geometry_source: Literal["yolo", "vlm_full_image", "vlm_crop", "none"]
+    geometry_source: Literal[
+        "yolo",
+        "vlm_full_image",
+        "vlm_crop",
+        "vlm_multi_image",
+        "none",
+    ]
     yolo_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     vlm_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     evidence_observation_ids: list[str] = Field(default_factory=list)
@@ -382,11 +392,13 @@ class RuntimeErrorInfo(BaseModel):
         "module",
         "behavior",
         "detection_summary",
+        "candidate_selection",
         "fusion",
         "review",
         "full_image_review",
         "crop_generation",
         "crop_scan_review",
+        "multi_image_review",
         "output",
     ]
     code: str
@@ -398,10 +410,12 @@ class TimingInfo(BaseModel):
     total: float = Field(ge=0.0)
     detection: Optional[float] = Field(default=None, ge=0.0)
     detection_summary: Optional[float] = Field(default=None, ge=0.0)
+    candidate_selection: Optional[float] = Field(default=None, ge=0.0)
     review: Optional[float] = Field(default=None, ge=0.0)
     full_image_review: Optional[float] = Field(default=None, ge=0.0)
     crop_generation: Optional[float] = Field(default=None, ge=0.0)
     crop_scan_review: Optional[float] = Field(default=None, ge=0.0)
+    multi_image_review: Optional[float] = Field(default=None, ge=0.0)
     fusion: Optional[float] = Field(default=None, ge=0.0)
     preview: Optional[float] = Field(default=None, ge=0.0)
 

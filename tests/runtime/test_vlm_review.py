@@ -6,18 +6,28 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from wrc_park_vision.runtime.config import ReviewProviderSettings, ReviewSettings
-from wrc_park_vision.runtime.crops import generate_crops
+from wrc_park_vision.runtime.config import (
+    ImportantCropSettings,
+    ReviewProviderSettings,
+    ReviewSettings,
+)
+from wrc_park_vision.runtime.review import (
+    MultiImageReviewRequest,
+    ReviewCandidate,
+    generate_important_crops,
+)
 from wrc_park_vision.runtime.schemas import (
     BehaviorCandidate,
     BehaviorClassSummary,
     DetectionSummary,
     DetectionSummaryItem,
-    ReviewSummary,
     ValidatedImage,
 )
 from wrc_park_vision.runtime.vlm.parser import ReviewResponseError, parse_review_response
-from wrc_park_vision.runtime.vlm.prompt import build_review_prompt
+from wrc_park_vision.runtime.vlm.prompt import (
+    build_multi_image_prompt,
+    build_review_prompt,
+)
 from wrc_park_vision.runtime.vlm.qwen25 import Qwen25VLProvider
 
 
@@ -97,10 +107,38 @@ def make_summary() -> DetectionSummary:
     )
 
 
+def make_two_detection_summary() -> DetectionSummary:
+    return make_summary().model_copy(
+        update={
+            "total_detections": 2,
+            "detections": [
+                *make_summary().detections,
+                DetectionSummaryItem(
+                    observation_id="obs-0002",
+                    task_group="prohibited_items",
+                    class_id=2,
+                    class_name="speaker",
+                    confidence=0.91,
+                    bbox_xyxy=(40, 5, 80, 50),
+                    bbox_normalized_xyxy=(0.4, 0.0625, 0.8, 0.625),
+                ),
+            ],
+        }
+    )
+
+
+def prompt_output_template(prompt: str) -> dict[str, object]:
+    template = prompt.split("保留三个顶层数组：\n", 1)[1].split(
+        "\n\nDetection Summary",
+        1,
+    )[0]
+    return json.loads(template)
+
+
 class VLMReviewTests(unittest.TestCase):
     def test_prompt_uses_real_enums_without_json_placeholders(self) -> None:
         prompt = build_review_prompt(make_summary(), CATALOG)
-        self.assertIn("检查完整图片", prompt)
+        self.assertIn("原始完整图片", prompt)
         self.assertIn("prohibited_items, garbage, uncivilized_behavior", prompt)
         self.assertIn("trampling_grass, smoking, blocking_fire_lane, standing_or_lying_on_bench", prompt)
         self.assertIn('"observation_id":"obs-0001"', prompt)
@@ -132,6 +170,151 @@ class VLMReviewTests(unittest.TestCase):
         self.assertNotIn("roller_skates", prompt)
         self.assertNotIn("允许的 task_group", prompt)
         self.assertNotIn("允许的 class_name", prompt)
+
+    def test_multi_image_prompt_only_templates_candidate_observations(self) -> None:
+        summary = make_two_detection_summary()
+        candidate = ReviewCandidate(
+            candidate_id="review-candidate-0001",
+            bbox_normalized_xyxy=(0.01, 0.025, 0.3, 0.5),
+            reasons=("low_confidence",),
+            observation_ids=("obs-0001",),
+        )
+
+        prompt = build_multi_image_prompt(
+            MultiImageReviewRequest(
+                image=ValidatedImage(
+                    "image.jpg",
+                    Image.new("RGB", (100, 80), "white"),
+                    100,
+                    80,
+                ),
+                summary=summary,
+                candidates=(candidate,),
+            ),
+            CATALOG,
+        )
+        template = prompt_output_template(prompt)
+
+        self.assertEqual(
+            [item["observation_id"] for item in template["yolo_reviews"]],
+            ["obs-0001"],
+        )
+        self.assertIn('"observation_id":"obs-0002"', prompt)
+        self.assertIn(
+            "未列入该数组的 detection 不需要输出 decision，系统默认保留",
+            prompt,
+        )
+
+    def test_required_review_observation_ids_are_deduplicated(self) -> None:
+        summary = make_two_detection_summary()
+        candidates = (
+            ReviewCandidate(
+                candidate_id="review-candidate-0001",
+                bbox_normalized_xyxy=(0.01, 0.025, 0.3, 0.5),
+                reasons=("low_confidence",),
+                observation_ids=("obs-0001",),
+            ),
+            ReviewCandidate(
+                candidate_id="review-candidate-0002",
+                bbox_normalized_xyxy=(0.0, 0.0, 0.5, 0.6),
+                reasons=("behavior_candidate",),
+                observation_ids=("obs-0001",),
+            ),
+        )
+        request = MultiImageReviewRequest(
+            image=ValidatedImage(
+                "image.jpg",
+                Image.new("RGB", (100, 80), "white"),
+                100,
+                80,
+            ),
+            summary=summary,
+            candidates=candidates,
+        )
+
+        self.assertEqual(request.required_review_observation_ids, ("obs-0001",))
+        template = prompt_output_template(build_multi_image_prompt(request, CATALOG))
+        self.assertEqual(len(template["yolo_reviews"]), 1)
+
+    def test_behavior_only_prompt_allows_empty_yolo_reviews(self) -> None:
+        summary = make_two_detection_summary().model_copy(
+            update={
+                "behavior_classes": [
+                    BehaviorClassSummary(
+                        class_id=2,
+                        class_name="blocking_fire_lane",
+                        required_object_classes=["vehicle"],
+                    )
+                ]
+            }
+        )
+        request = MultiImageReviewRequest(
+            image=ValidatedImage(
+                "image.jpg",
+                Image.new("RGB", (100, 80), "white"),
+                100,
+                80,
+            ),
+            summary=summary,
+        )
+
+        template = prompt_output_template(build_multi_image_prompt(request, CATALOG))
+
+        self.assertEqual(request.required_review_observation_ids, ())
+        self.assertEqual(template["yolo_reviews"], [])
+
+    def test_empty_required_reviews_still_parse_findings_and_behaviors(self) -> None:
+        summary = make_summary().model_copy(
+            update={
+                "behavior_classes": [
+                    BehaviorClassSummary(
+                        class_id=2,
+                        class_name="blocking_fire_lane",
+                        required_object_classes=["vehicle"],
+                    )
+                ]
+            }
+        )
+        parsed = parse_review_response(
+            json.dumps(
+                {
+                    "yolo_reviews": [],
+                    "new_findings": [
+                        {
+                            "task_group": "garbage",
+                            "class_name": "plastic_drink_bottle",
+                            "confidence": 0.76,
+                            "bbox_normalized_xyxy": [0.2, 0.2, 0.4, 0.5],
+                            "review_pass": "multi_image",
+                            "geometry_source": "vlm_multi_image",
+                        }
+                    ],
+                    "behavior_reviews": [
+                        {
+                            "candidate_id": None,
+                            "class_name": "blocking_fire_lane",
+                            "verdict": "confirmed",
+                            "confidence": 0.8,
+                        }
+                    ],
+                }
+            ),
+            summary,
+            CATALOG,
+            review_pass="multi_image",
+            required_review_observation_ids=(),
+        )
+
+        self.assertEqual(parsed.decisions, [])
+        self.assertEqual(
+            [finding.class_name for finding in parsed.findings],
+            ["plastic_drink_bottle"],
+        )
+        self.assertEqual(
+            [behavior.class_name for behavior in parsed.behaviors],
+            ["blocking_fire_lane"],
+        )
+        self.assertEqual(parsed.issues, [])
 
     def test_parser_accepts_minimal_7b_response_and_empty_reasoning(self) -> None:
         content = json.dumps(
@@ -273,19 +456,21 @@ class VLMReviewTests(unittest.TestCase):
         self.assertEqual(parsed.findings[0].review_pass, "full_image")
         self.assertEqual(parsed.issues[0].section, "new_findings")
 
-    def test_crop_scan_uses_shared_parser_and_requires_known_crop(self) -> None:
+    def test_multi_image_finding_uses_original_coordinates_and_known_crop_id(self) -> None:
         content = json.dumps(
             {
-                "yolo_reviews": [],
+                "yolo_reviews": [
+                    {"observation_id": "obs-0001", "verdict": "confirmed"}
+                ],
                 "new_findings": [
                     {
                         "task_group": "prohibited_items",
                         "class_name": "speaker",
                         "confidence": 0.65,
                         "bbox_normalized_xyxy": [0.1, 0.2, 0.8, 0.9],
-                        "crop_id": "crop-r1-c2",
-                        "review_pass": "crop_scan",
-                        "geometry_source": "vlm_crop",
+                        "crop_id": "important-crop-01",
+                        "review_pass": "multi_image",
+                        "geometry_source": "vlm_multi_image",
                     }
                 ],
                 "behavior_reviews": [],
@@ -296,14 +481,18 @@ class VLMReviewTests(unittest.TestCase):
             content,
             make_summary(),
             CATALOG,
-            review_pass="crop_scan",
+            review_pass="multi_image",
             require_finding_bbox=True,
-            valid_crop_ids={"crop-r1-c2"},
+            valid_crop_ids={"important-crop-01"},
         )
 
-        self.assertEqual(parsed.decisions, [])
-        self.assertEqual(parsed.findings[0].crop_id, "crop-r1-c2")
-        self.assertEqual(parsed.findings[0].geometry_source, "vlm_crop")
+        self.assertEqual(len(parsed.decisions), 1)
+        self.assertEqual(parsed.findings[0].crop_id, "important-crop-01")
+        self.assertEqual(parsed.findings[0].geometry_source, "vlm_multi_image")
+        self.assertEqual(
+            parsed.findings[0].bbox_normalized_xyxy,
+            (0.1, 0.2, 0.8, 0.9),
+        )
         self.assertEqual(parsed.issues, [])
 
     def test_parser_handles_candidate_review_and_full_image_behavior(self) -> None:
@@ -474,7 +663,7 @@ class VLMReviewTests(unittest.TestCase):
         self.assertEqual(parsed.behaviors, [])
         self.assertEqual(parsed.issues, [])
 
-    def test_qwen_provider_sends_full_image_and_parses_response(self) -> None:
+    def test_qwen_provider_sends_original_image_and_parses_response(self) -> None:
         settings = ReviewProviderSettings(
             enabled=True,
             endpoint="http://localhost:8000/v1/chat/completions",
@@ -531,14 +720,16 @@ class VLMReviewTests(unittest.TestCase):
             result = provider.review(image, make_summary())
 
         content = captured["body"]["messages"][0]["content"]
-        self.assertTrue(content[0]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
-        self.assertIn("检查完整图片", content[1]["text"])
-        self.assertIn("带喷嘴或喷头的加压气雾罐", content[1]["text"])
+        self.assertIn("一次完成", content[0]["text"])
+        self.assertEqual(content[1]["text"], "image_id=original_image")
+        self.assertTrue(content[2]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+        self.assertIn("带喷嘴或喷头的加压气雾罐", content[0]["text"])
         self.assertEqual(captured["calls"], 1)
         self.assertEqual(captured["timeout"], 10.0)
+        self.assertEqual(result.review_pass, "multi_image")
         self.assertEqual(result.decisions[0].verdict, "confirmed")
 
-    def test_qwen_uses_distinct_prompts_and_one_request_for_all_crops(self) -> None:
+    def test_qwen_sends_original_and_all_important_crops_in_one_request(self) -> None:
         settings = ReviewProviderSettings(
             enabled=True,
             endpoint="http://localhost:8000/v1/chat/completions",
@@ -556,54 +747,48 @@ class VLMReviewTests(unittest.TestCase):
             100,
             100,
         )
-        crops = generate_crops(image, review_settings.crop_scan)
-        responses = [
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(
-                                {
-                                    "yolo_reviews": [
-                                        {
-                                            "observation_id": "obs-0001",
-                                            "verdict": "confirmed",
-                                        }
-                                    ],
-                                    "new_findings": [],
-                                    "behavior_reviews": [],
-                                }
-                            )
-                        }
+        candidate = ReviewCandidate(
+            candidate_id="review-candidate-0001",
+            bbox_normalized_xyxy=(0.1, 0.1, 0.3, 0.3),
+            reasons=("low_confidence",),
+            observation_ids=("obs-0001",),
+            priority=2,
+        )
+        crops = generate_important_crops(
+            image,
+            [candidate],
+            ImportantCropSettings(),
+        )
+        response_payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "yolo_reviews": [
+                                    {
+                                        "observation_id": "obs-0001",
+                                        "verdict": "confirmed",
+                                    }
+                                ],
+                                "new_findings": [
+                                    {
+                                        "task_group": "garbage",
+                                        "class_name": "plastic_drink_bottle",
+                                        "confidence": 0.7,
+                                        "bbox_normalized_xyxy": [0.5, 0.5, 0.8, 0.8],
+                                        "crop_id": crops[0].crop_id,
+                                        "review_pass": "multi_image",
+                                        "geometry_source": "vlm_multi_image",
+                                    }
+                                ],
+                                "behavior_reviews": [],
+                            }
+                        )
                     }
-                ]
-            },
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(
-                                {
-                                    "yolo_reviews": [],
-                                    "new_findings": [
-                                        {
-                                            "task_group": "garbage",
-                                            "class_name": "plastic_drink_bottle",
-                                            "confidence": 0.7,
-                                            "bbox_normalized_xyxy": [0.1, 0.1, 0.8, 0.8],
-                                            "crop_id": crops[0].crop_id,
-                                            "review_pass": "crop_scan",
-                                            "geometry_source": "vlm_crop",
-                                        }
-                                    ],
-                                    "behavior_reviews": [],
-                                }
-                            )
-                        }
-                    }
-                ]
-            },
-        ]
+                }
+            ]
+        }
         captured_bodies = []
 
         class FakeResponse:
@@ -621,31 +806,27 @@ class VLMReviewTests(unittest.TestCase):
 
         def fake_urlopen(request, timeout):
             captured_bodies.append(json.loads(request.data.decode("utf-8")))
-            return FakeResponse(responses[len(captured_bodies) - 1])
+            return FakeResponse(response_payload)
 
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            full_result = provider.review(image, make_summary())
-            crop_result = provider.review_crops(
-                crops,
-                image,
-                make_summary(),
-                ReviewSummary(
-                    attempted=True,
-                    status="completed",
-                    decisions=full_result.decisions,
-                ),
+            result = provider.review_multi_image(
+                MultiImageReviewRequest(
+                    image=image,
+                    summary=make_summary(),
+                    candidates=(candidate,),
+                    crops=tuple(crops),
+                )
             )
 
-        self.assertEqual(len(captured_bodies), 2)
-        full_content = captured_bodies[0]["messages"][0]["content"]
-        crop_content = captured_bodies[1]["messages"][0]["content"]
-        self.assertIn("检查完整图片", full_content[1]["text"])
-        self.assertIn("独立的重叠分块漏检扫描", crop_content[0]["text"])
-        self.assertNotEqual(full_content[1]["text"], crop_content[0]["text"])
-        crop_images = [item for item in crop_content if item["type"] == "image_url"]
-        self.assertEqual(len(crop_images), len(crops))
-        self.assertEqual(crop_result.review_pass, "crop_scan")
-        self.assertEqual(crop_result.findings[0].crop_id, crops[0].crop_id)
+        self.assertEqual(len(captured_bodies), 1)
+        content = captured_bodies[0]["messages"][0]["content"]
+        images = [item for item in content if item["type"] == "image_url"]
+        self.assertEqual(len(images), 1 + len(crops))
+        self.assertIn("坐标唯一基准", content[0]["text"])
+        self.assertIn(crops[0].crop_id, content[0]["text"])
+        self.assertEqual(result.review_pass, "multi_image")
+        self.assertEqual(result.findings[0].crop_id, crops[0].crop_id)
+        self.assertEqual(result.findings[0].geometry_source, "vlm_multi_image")
 
     def test_qwen_parser_error_contains_truncated_raw_response(self) -> None:
         settings = ReviewProviderSettings(

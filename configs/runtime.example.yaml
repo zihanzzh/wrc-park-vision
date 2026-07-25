@@ -137,20 +137,22 @@ review:
   review_cross_task_overlap: true
   review_module_failure: true
   require_finding_bbox: true
-  full_image:
+  candidate_selection:
+    include_low_confidence: true
+    include_cross_model_conflicts: true
+    include_small_objects: true
+    include_behavior_candidates: true
+    small_object_area_ratio: 0.02
+  important_crops:
     enabled: true
-    timeout_seconds: 5
+    context_scale: 2.0
+    min_crop_size_ratio: 0.18
+    merge_iou_threshold: 0.20
+    max_crops: 5
+  multi_image:
+    enabled: true
+    timeout_seconds: 8
     max_tokens: 1200
-  crop_scan:
-    enabled: true
-    timeout_seconds: 5
-    max_tokens: 700
-    overlap: 0.20
-    aspect_ratio_threshold: 1.4
-    square_rows: 2
-    square_columns: 2
-    wide_columns: 3
-    tall_rows: 3
   provider:
     enabled: false
     type: qwen2_5_vl

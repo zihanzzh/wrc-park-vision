@@ -6,7 +6,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from wrc_park_vision.runtime.config import ConfigError, load_runtime_config
+from wrc_park_vision.runtime.config import (
+    ConfigError,
+    RuntimeConfig,
+    load_runtime_config,
+)
 
 
 class ConfigTests(unittest.TestCase):
@@ -451,9 +455,9 @@ modules:
         self.assertEqual(config.review.review_failure_policy, "keep_flagged")
         self.assertEqual(config.fusion.uncertain_policy, "keep_flagged")
         self.assertEqual(config.fusion.review_failure_policy, "keep_flagged")
-        self.assertTrue(config.review.full_image.enabled)
-        self.assertTrue(config.review.crop_scan.enabled)
-        self.assertEqual(config.review.crop_scan.overlap, 0.20)
+        self.assertTrue(config.review.multi_image.enabled)
+        self.assertTrue(config.review.important_crops.enabled)
+        self.assertEqual(config.review.important_crops.max_crops, 5)
         self.assertEqual(config.fusion.finding_iou_threshold, 0.65)
 
     def test_legacy_review_fusion_policies_are_migrated(self) -> None:
@@ -484,7 +488,7 @@ review:
             "drop_review_required",
         )
 
-    def test_invalid_crop_scan_configuration_fails(self) -> None:
+    def test_invalid_important_crop_configuration_fails(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "runtime.yaml"
             config_path.write_text(
@@ -499,17 +503,17 @@ modules:
     model_id: active_model
     expected_class_names: [bottle]
 review:
-  crop_scan:
+  important_crops:
     enabled: true
-    overlap: 1.0
-    aspect_ratio_threshold: 1.0
+    context_scale: 0.5
+    max_crops: 0
 """,
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ConfigError, "invalid runtime config"):
                 load_runtime_config(config_path, validate_model_paths=False)
 
-    def test_examples_enable_dual_review_passes_and_fusion_dedup(self) -> None:
+    def test_examples_enable_single_multi_image_review_and_fusion_dedup(self) -> None:
         with patch.dict(
             os.environ,
             {
@@ -528,15 +532,46 @@ review:
                         validate_model_paths=False,
                     )
                     self.assertTrue(config.review.require_finding_bbox)
-                    self.assertEqual(config.review.full_image.timeout_seconds, 5)
-                    self.assertEqual(config.review.full_image.max_tokens, 1200)
-                    self.assertEqual(config.review.crop_scan.timeout_seconds, 5)
-                    self.assertEqual(config.review.crop_scan.max_tokens, 700)
-                    self.assertEqual(config.review.crop_scan.square_rows, 2)
-                    self.assertEqual(config.review.crop_scan.square_columns, 2)
-                    self.assertEqual(config.review.crop_scan.wide_columns, 3)
-                    self.assertEqual(config.review.crop_scan.tall_rows, 3)
+                    self.assertEqual(config.review.multi_image.timeout_seconds, 8)
+                    self.assertEqual(config.review.multi_image.max_tokens, 1200)
+                    self.assertEqual(config.review.important_crops.max_crops, 5)
+                    self.assertEqual(config.review.important_crops.context_scale, 2.0)
+                    self.assertEqual(
+                        config.review.important_crops.merge_iou_threshold,
+                        0.20,
+                    )
                     self.assertEqual(config.fusion.finding_iou_threshold, 0.65)
+
+    def test_v2_dual_pass_config_migrates_to_one_v3_request(self) -> None:
+        config = RuntimeConfig.model_validate(
+            {
+                "modules": [
+                    {
+                        "id": "active",
+                        "enabled": True,
+                        "type": "detection",
+                        "task_group": "garbage",
+                        "backend": "ultralytics",
+                        "model_path": "model.pt",
+                        "model_id": "active",
+                        "expected_class_names": ["bottle"],
+                    }
+                ],
+                "review": {
+                    "full_image": {
+                        "enabled": True,
+                        "timeout_seconds": 6,
+                        "max_tokens": 900,
+                    },
+                    "crop_scan": {"enabled": False},
+                },
+            }
+        )
+
+        self.assertTrue(config.review.multi_image.enabled)
+        self.assertEqual(config.review.multi_image.timeout_seconds, 6)
+        self.assertEqual(config.review.multi_image.max_tokens, 900)
+        self.assertFalse(config.review.important_crops.enabled)
 
     def test_behavior_pipeline_requires_four_canonical_classes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

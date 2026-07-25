@@ -180,7 +180,7 @@ class FusionTests(unittest.TestCase):
         self.assertIn("review_item_missing_or_failed", finalized[0].review.reasons)
         self.assertEqual(fusion.decisions[0].action, "keep_review_failed")
 
-    def test_full_image_finding_creates_final_observation(self) -> None:
+    def test_multi_image_finding_creates_final_observation(self) -> None:
         geometry = BBoxGeometry.from_xyxy((20, 10, 60, 50), 100, 80)
         review = ReviewSummary(
             attempted=True,
@@ -189,12 +189,14 @@ class FusionTests(unittest.TestCase):
             model_id="qwen-vl",
             findings=[
                 VLMFinding(
-                    id="vlm-full-0001",
+                    id="vlm-multi-0001",
                     task_group="garbage",
                     class_id=3,
                     class_name="plastic_drink_bottle",
                     confidence=0.81,
                     bbox_normalized_xyxy=geometry.bbox_normalized_xyxy,
+                    review_pass="multi_image",
+                    geometry_source="vlm_multi_image",
                     geometry=geometry,
                 )
             ],
@@ -205,10 +207,10 @@ class FusionTests(unittest.TestCase):
         self.assertEqual(len(finalized), 1)
         self.assertEqual(finalized[0].source.module_id, "vlm_review")
         self.assertEqual(finalized[0].geometry, geometry)
-        self.assertEqual(finalized[0].metadata["geometry_source"], "vlm_full_image")
+        self.assertEqual(finalized[0].metadata["geometry_source"], "vlm_multi_image")
         self.assertEqual(fusion.decisions[0].action, "add_vlm_finding")
 
-    def test_overlapping_crop_findings_are_deduplicated(self) -> None:
+    def test_overlapping_multi_image_findings_are_deduplicated(self) -> None:
         first = BBoxGeometry.from_xyxy((20, 10, 60, 50), 100, 80)
         second = BBoxGeometry.from_xyxy((21, 11, 61, 51), 100, 80)
         review = ReviewSummary(
@@ -218,27 +220,27 @@ class FusionTests(unittest.TestCase):
             model_id="qwen-vl",
             findings=[
                 VLMFinding(
-                    id="vlm-crop-0001",
+                    id="vlm-multi-0001",
                     task_group="prohibited_items",
                     class_id=5,
                     class_name="speaker",
                     confidence=0.7,
                     bbox_normalized_xyxy=(0.1, 0.1, 0.8, 0.8),
-                    crop_id="crop-r1-c1",
-                    review_pass="crop_scan",
-                    geometry_source="vlm_crop",
+                    crop_id="important-crop-01",
+                    review_pass="multi_image",
+                    geometry_source="vlm_multi_image",
                     geometry=first,
                 ),
                 VLMFinding(
-                    id="vlm-crop-0002",
+                    id="vlm-multi-0002",
                     task_group="prohibited_items",
                     class_id=5,
                     class_name="speaker",
                     confidence=0.8,
                     bbox_normalized_xyxy=(0.1, 0.1, 0.8, 0.8),
-                    crop_id="crop-r1-c2",
-                    review_pass="crop_scan",
-                    geometry_source="vlm_crop",
+                    crop_id="important-crop-02",
+                    review_pass="multi_image",
+                    geometry_source="vlm_multi_image",
                     geometry=second,
                 ),
             ],
@@ -248,7 +250,7 @@ class FusionTests(unittest.TestCase):
 
         self.assertEqual(len(finalized), 1)
         self.assertEqual(finalized[0].confidence, 0.8)
-        self.assertEqual(finalized[0].metadata["crop_id"], "crop-r1-c2")
+        self.assertEqual(finalized[0].metadata["crop_id"], "important-crop-02")
         self.assertEqual([item.action for item in fusion.decisions], [
             "add_vlm_finding",
             "merge_duplicate",

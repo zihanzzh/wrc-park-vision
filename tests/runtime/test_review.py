@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import unittest
 
-from wrc_park_vision.runtime.config import ReviewSettings
+from wrc_park_vision.runtime.config import (
+    CandidateSelectionSettings,
+    ReviewSettings,
+)
 from wrc_park_vision.runtime.detection_summary import build_detection_summary
 from wrc_park_vision.runtime.fusion import merge_and_mark_conflicts
 from wrc_park_vision.runtime.review import ReviewCoordinator, ReviewPolicy, ReviewProvider
@@ -38,7 +41,13 @@ class ReviewTests(unittest.TestCase):
             ModuleSummary(module_id="garbage", task_group="garbage", status="success", duration_ms=1),
             ModuleSummary(module_id="prohibited", task_group="prohibited", status="failure", duration_ms=1, error="x"),
         ]
-        reviewed, summary = ReviewPolicy(ReviewSettings()).apply([observation], modules)
+        reviewed, summary = ReviewPolicy(
+            ReviewSettings(
+                candidate_selection=CandidateSelectionSettings(
+                    include_small_objects=False
+                )
+            )
+        ).apply([observation], modules)
         self.assertEqual(reviewed[0].review.status, "not_required")
         self.assertEqual(summary.reasons, ["module_failure"])
 

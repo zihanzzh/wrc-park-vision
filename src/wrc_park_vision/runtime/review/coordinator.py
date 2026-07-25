@@ -1,9 +1,10 @@
-"""Review policy and full-image VLM review coordination."""
+"""Review policy and unified VLM result coordination."""
 
 from __future__ import annotations
 
-from .config import ReviewSettings
-from .schemas import (
+from ..config import ReviewSettings
+from ..schemas import (
+    BBoxGeometry,
     DetectionSummary,
     ModuleSummary,
     Observation,
@@ -13,12 +14,14 @@ from .schemas import (
     VLMReviewResult,
     ValidatedImage,
 )
-from .vlm.base import ReviewProvider
+from ..vlm.base import ReviewProvider
+from .candidate_selector import normalized_bbox_area
 
 
 REASON_ORDER = (
     "low_confidence",
     "cross_model_overlap",
+    "small_object",
     "module_failure",
     "behavior_candidate",
     "behavior_full_image_scan",
@@ -36,35 +39,57 @@ class ReviewPolicy:
     ) -> tuple[list[Observation], ReviewSummary]:
         reviewed = [observation.model_copy(deep=True) for observation in observations]
         top_reasons: set[str] = set()
+        selection = self.settings.candidate_selection
         for observation in reviewed:
             reasons: list[str] = []
-            if observation.confidence < self.settings.low_confidence_threshold:
+            if (
+                selection.include_low_confidence
+                and observation.confidence < self.settings.low_confidence_threshold
+            ):
                 reasons.append("low_confidence")
-            if self.settings.review_cross_task_overlap and observation.conflicts:
+            if (
+                selection.include_cross_model_conflicts
+                and self.settings.review_cross_task_overlap
+                and observation.conflicts
+            ):
                 reasons.append("cross_model_overlap")
+            if (
+                selection.include_small_objects
+                and isinstance(observation.geometry, BBoxGeometry)
+                and normalized_bbox_area(observation.geometry)
+                <= selection.small_object_area_ratio
+            ):
+                reasons.append("small_object")
             if reasons:
-                observation.review = ObservationReview(required=True, status="pending", reasons=reasons)
+                observation.review = ObservationReview(
+                    required=True,
+                    status="pending",
+                    reasons=reasons,
+                )
                 top_reasons.update(reasons)
             else:
                 observation.review = ObservationReview()
 
-        if self.settings.review_module_failure and any(module.status == "failure" for module in modules):
+        if self.settings.review_module_failure and any(
+            module.status == "failure" for module in modules
+        ):
             top_reasons.add("module_failure")
         ordered = [reason for reason in REASON_ORDER if reason in top_reasons]
-        status = "pending" if ordered else "not_required"
         return reviewed, ReviewSummary(
             required=bool(ordered),
             reasons=ordered,
-            status=status,
+            status="pending" if ordered else "not_required",
             uncertain_policy=self.settings.uncertain_policy,
             review_failure_policy=self.settings.review_failure_policy,
         )
 
 
 class ReviewCoordinator:
-    """Keep policy decisions and future VLM inference behind one pipeline call."""
-
-    def __init__(self, settings: ReviewSettings, provider: ReviewProvider | None = None) -> None:
+    def __init__(
+        self,
+        settings: ReviewSettings,
+        provider: ReviewProvider | None = None,
+    ) -> None:
         self.policy = ReviewPolicy(settings)
         self.provider = provider
 
@@ -95,48 +120,38 @@ class ReviewCoordinator:
         reviewed: list[Observation],
         summary: ReviewSummary,
         result: VLMReviewResult,
-        *,
-        include_object_reviews: bool,
-        include_behavior_reviews: bool,
     ) -> tuple[list[Observation], ReviewSummary]:
         merged = summary.model_copy(deep=True)
-        if include_object_reviews:
-            decisions_by_id = {
-                decision.observation_id: decision
-                for decision in result.decisions
-            }
-            for observation in reviewed:
-                decision = decisions_by_id.get(observation.id)
-                if decision is None:
-                    continue
-                if decision.verdict == "confirmed":
-                    observation.review.status = "confirmed"
-                elif decision.verdict == "rejected":
-                    observation.review.status = "rejected"
-                elif decision.verdict == "corrected":
-                    observation.review.status = "confirmed"
-                else:
-                    observation.review.status = "pending"
-                observation.review.required = True
-                reason = f"{result.review_pass}_vlm_review"
-                if reason not in observation.review.reasons:
-                    observation.review.reasons.append(reason)
+        decisions_by_id = {
+            decision.observation_id: decision for decision in result.decisions
+        }
+        for observation in reviewed:
+            decision = decisions_by_id.get(observation.id)
+            if decision is None:
+                continue
+            if decision.verdict in {"confirmed", "corrected"}:
+                observation.review.status = "confirmed"
+            elif decision.verdict == "rejected":
+                observation.review.status = "rejected"
+            else:
+                observation.review.status = "pending"
+            observation.review.required = True
+            if "multi_image_vlm_review" not in observation.review.reasons:
+                observation.review.reasons.append("multi_image_vlm_review")
 
         merged.required = True
         merged.attempted = True
         merged.status = "completed"
         merged.provider = result.provider
         merged.model_id = result.model_id
-        merged.duration_ms = (merged.duration_ms or 0.0) + result.duration_ms
-        if include_object_reviews:
-            merged.decisions.extend(result.decisions)
+        merged.duration_ms = result.duration_ms
+        merged.decisions.extend(result.decisions)
         merged.findings.extend(result.findings)
-        if include_behavior_reviews:
-            merged.behaviors.extend(result.behaviors)
+        merged.behaviors.extend(result.behaviors)
         merged.issues.extend(result.issues)
         merged.passes.append(
             ReviewPassSummary(
-                pass_id=result.review_pass,
+                pass_id="multi_image",
                 attempted=True,
                 status="completed",
                 duration_ms=result.duration_ms,
@@ -153,16 +168,12 @@ class ReviewCoordinator:
         modules: list[ModuleSummary],
         detection_summary: DetectionSummary,
     ) -> tuple[list[Observation], ReviewSummary]:
-        """Backward-compatible single full-image review entry point."""
+        """Compatibility entry point for original-image-only provider callers."""
         reviewed, summary = self.prepare(observations, modules, detection_summary)
         if self.provider is None:
             return reviewed, summary
-
-        result = self.provider.review(image, detection_summary)
         return self.apply_result(
             reviewed,
             summary,
-            result,
-            include_object_reviews=True,
-            include_behavior_reviews=True,
+            self.provider.review(image, detection_summary),
         )

@@ -4,16 +4,25 @@ import unittest
 
 from PIL import Image
 
-from wrc_park_vision.runtime.config import CropScanSettings
-from wrc_park_vision.runtime.crops import (
-    generate_crops,
-    map_crop_bbox_to_image,
-    map_full_image_bbox,
+from wrc_park_vision.runtime.config import (
+    CandidateSelectionSettings,
+    ImportantCropSettings,
 )
-from wrc_park_vision.runtime.schemas import ValidatedImage
+from wrc_park_vision.runtime.review import (
+    ReviewCandidate,
+    generate_important_crops,
+    select_review_candidates,
+)
+from wrc_park_vision.runtime.schemas import (
+    BehaviorCandidate,
+    Conflict,
+    ValidatedImage,
+)
+
+from .helpers import make_observation
 
 
-def make_image(width: int, height: int) -> ValidatedImage:
+def make_image(width: int = 200, height: int = 100) -> ValidatedImage:
     return ValidatedImage(
         "image.jpg",
         Image.new("RGB", (width, height), "white"),
@@ -22,78 +31,153 @@ def make_image(width: int, height: int) -> ValidatedImage:
     )
 
 
-class CropTests(unittest.TestCase):
-    def test_square_image_generates_overlapping_two_by_two_crops(self) -> None:
-        crops = generate_crops(make_image(100, 100), CropScanSettings())
+class ReviewCropTests(unittest.TestCase):
+    def test_selects_low_confidence_conflict_small_and_behavior_candidates(self) -> None:
+        low = make_observation(
+            "garbage", "garbage", 0, "bottle", 0.3, (10, 10, 40, 40), (200, 100)
+        )
+        low.id = "obs-0001"
+        conflict = make_observation(
+            "prohibited_items",
+            "world",
+            0,
+            "spray_can",
+            0.9,
+            (80, 10, 130, 60),
+            (200, 100),
+        )
+        conflict.id = "obs-0002"
+        conflict.conflicts = [Conflict(observation_id="obs-0003")]
+        small = make_observation(
+            "garbage", "garbage", 1, "paper", 0.9, (180, 80, 190, 90), (200, 100)
+        )
+        small.id = "obs-0003"
+        behavior = BehaviorCandidate(
+            id="behavior-candidate-0001",
+            class_id=0,
+            class_name="trampling_grass",
+            evidence_observation_ids=["obs-0001", "obs-0002"],
+            evidence_class_names=["person", "grass"],
+        )
 
-        self.assertEqual(len(crops), 4)
-        self.assertEqual(crops[0].bbox_xyxy, (0, 0, 56, 56))
-        self.assertEqual(crops[-1].bbox_xyxy, (44, 44, 100, 100))
-        self.assertGreater(crops[0].bbox_xyxy[2] - crops[1].bbox_xyxy[0], 0)
-        self.assertGreater(crops[0].bbox_xyxy[3] - crops[2].bbox_xyxy[1], 0)
+        selected = select_review_candidates(
+            [low, conflict, small],
+            [behavior],
+            CandidateSelectionSettings(),
+            low_confidence_threshold=0.45,
+        )
 
-    def test_wide_image_generates_three_horizontal_crops(self) -> None:
-        crops = generate_crops(make_image(300, 100), CropScanSettings())
+        self.assertEqual(len(selected), 4)
+        self.assertEqual(selected[0].reasons, ("low_confidence",))
+        self.assertEqual(selected[1].reasons, ("cross_model_conflict",))
+        self.assertEqual(selected[2].reasons, ("small_object",))
+        self.assertEqual(selected[3].reasons, ("behavior_candidate",))
+        self.assertEqual(
+            selected[3].behavior_candidate_ids,
+            ("behavior-candidate-0001",),
+        )
+
+    def test_important_crops_are_candidate_driven_not_fixed_grid(self) -> None:
+        candidate = ReviewCandidate(
+            candidate_id="review-candidate-0001",
+            bbox_normalized_xyxy=(0.05, 0.1, 0.15, 0.3),
+            reasons=("low_confidence",),
+            observation_ids=("obs-0001",),
+            priority=2,
+        )
+
+        crops = generate_important_crops(
+            make_image(),
+            [candidate],
+            ImportantCropSettings(),
+        )
+
+        self.assertEqual(len(crops), 1)
+        self.assertEqual(crops[0].observation_ids, ("obs-0001",))
+        self.assertLess(crops[0].bbox_xyxy[2], 100)
+        self.assertEqual(crops[0].image.size, (crops[0].width, crops[0].height))
+
+    def test_overlapping_candidates_are_merged(self) -> None:
+        candidates = [
+            ReviewCandidate(
+                candidate_id=f"review-candidate-{index:04d}",
+                bbox_normalized_xyxy=bbox,
+                reasons=("low_confidence",),
+                observation_ids=(f"obs-{index:04d}",),
+                priority=2,
+            )
+            for index, bbox in enumerate(
+                ((0.2, 0.2, 0.4, 0.5), (0.3, 0.25, 0.5, 0.55)),
+                1,
+            )
+        ]
+
+        crops = generate_important_crops(
+            make_image(),
+            candidates,
+            ImportantCropSettings(context_scale=1.5, merge_iou_threshold=0.1),
+        )
+
+        self.assertEqual(len(crops), 1)
+        self.assertEqual(crops[0].observation_ids, ("obs-0001", "obs-0002"))
+
+    def test_crop_count_is_capped_and_all_regions_stay_in_bounds(self) -> None:
+        candidates = [
+            ReviewCandidate(
+                candidate_id=f"review-candidate-{index:04d}",
+                bbox_normalized_xyxy=(
+                    index * 0.15,
+                    0.1,
+                    index * 0.15 + 0.05,
+                    0.2,
+                ),
+                reasons=("small_object",),
+                observation_ids=(f"obs-{index:04d}",),
+                priority=1,
+            )
+            for index in range(6)
+        ]
+
+        crops = generate_important_crops(
+            make_image(),
+            candidates,
+            ImportantCropSettings(
+                context_scale=1.0,
+                min_crop_size_ratio=0.05,
+                merge_iou_threshold=1.0,
+                max_crops=3,
+            ),
+        )
 
         self.assertEqual(len(crops), 3)
-        self.assertTrue(all(crop.bbox_xyxy[1] == 0 for crop in crops))
-        self.assertEqual(crops[0].bbox_xyxy[0], 0)
-        self.assertEqual(crops[-1].bbox_xyxy[2], 300)
+        self.assertTrue(
+            all(
+                0 <= x1 < x2 <= 200 and 0 <= y1 < y2 <= 100
+                for x1, y1, x2, y2 in (crop.bbox_xyxy for crop in crops)
+            )
+        )
 
-    def test_tall_image_generates_three_vertical_crops(self) -> None:
-        crops = generate_crops(make_image(100, 300), CropScanSettings())
-
-        self.assertEqual(len(crops), 3)
-        self.assertTrue(all(crop.bbox_xyxy[0] == 0 for crop in crops))
-        self.assertEqual(crops[0].bbox_xyxy[1], 0)
-        self.assertEqual(crops[-1].bbox_xyxy[3], 300)
-
-    def test_crops_cover_image_without_out_of_bounds_or_empty_regions(self) -> None:
-        for width, height in ((100, 100), (300, 100), (100, 300), (1, 1), (2, 1)):
-            with self.subTest(size=(width, height)):
-                crops = generate_crops(make_image(width, height), CropScanSettings())
-                self.assertTrue(crops)
-                self.assertTrue(
-                    all(
-                        0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height
-                        for x1, y1, x2, y2 in (crop.bbox_xyxy for crop in crops)
-                    )
-                )
-                covered = {
-                    (x, y)
-                    for crop in crops
-                    for x in range(crop.bbox_xyxy[0], crop.bbox_xyxy[2])
-                    for y in range(crop.bbox_xyxy[1], crop.bbox_xyxy[3])
-                }
-                self.assertEqual(len(covered), width * height)
-
-    def test_crop_bbox_mapping_handles_top_left_overlap_bottom_right_and_clipping(self) -> None:
-        image = make_image(200, 100)
-        crops = generate_crops(image, CropScanSettings())
-        left, middle, right = crops
-
+    def test_disabled_or_empty_candidate_set_creates_no_crops(self) -> None:
+        image = make_image()
         self.assertEqual(
-            map_crop_bbox_to_image(left, (0.0, 0.0, 0.5, 0.5), 200, 100).bbox_xyxy,
-            (0.0, 0.0, left.width * 0.5, 50.0),
+            generate_important_crops(image, [], ImportantCropSettings()),
+            [],
         )
-        middle_geometry = map_crop_bbox_to_image(
-            middle,
-            (0.25, 0.2, 0.75, 0.8),
-            200,
-            100,
+        candidate = ReviewCandidate(
+            candidate_id="review-candidate-0001",
+            bbox_normalized_xyxy=(0.1, 0.1, 0.2, 0.2),
+            reasons=("small_object",),
+            observation_ids=("obs-0001",),
+            priority=1,
         )
-        self.assertGreater(middle_geometry.bbox_xyxy[0], middle.bbox_xyxy[0])
-        self.assertLess(middle_geometry.bbox_xyxy[2], middle.bbox_xyxy[2])
         self.assertEqual(
-            map_crop_bbox_to_image(right, (-0.2, 0.5, 1.2, 1.1), 200, 100).bbox_xyxy,
-            (float(right.bbox_xyxy[0]), 50.0, 200.0, 100.0),
+            generate_important_crops(
+                image,
+                [candidate],
+                ImportantCropSettings(enabled=False),
+            ),
+            [],
         )
-
-    def test_full_image_bbox_mapping_supports_non_square_images(self) -> None:
-        geometry = map_full_image_bbox((0.1, 0.2, 0.9, 0.8), 300, 100)
-
-        self.assertEqual(geometry.bbox_xyxy, (30.0, 20.0, 270.0, 80.0))
-        self.assertEqual(geometry.bbox_normalized_xyxy, (0.1, 0.2, 0.9, 0.8))
 
 
 if __name__ == "__main__":

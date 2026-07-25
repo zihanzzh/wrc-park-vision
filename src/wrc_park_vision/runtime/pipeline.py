@@ -16,12 +16,18 @@ from .backends import (
     YOLOWorldClassDefinition,
 )
 from .config import ModuleSettings, RuntimeConfig
-from .crops import ImageCrop, generate_crops, map_crop_bbox_to_image, map_full_image_bbox
 from .detection_summary import build_detection_summary
 from .fusion import fuse_review_results, merge_and_mark_conflicts, prepare_observations
 from .modules import BehaviorModule, BehaviorPipeline, DetectionModule, TaskModule
-from .review import ReviewCoordinator, ReviewProvider
+from .review import (
+    MultiImageReviewRequest,
+    ReviewCoordinator,
+    ReviewProvider,
+    generate_important_crops,
+    select_review_candidates,
+)
 from .schemas import (
+    BBoxGeometry,
     DetectionSummary,
     FusionSummary,
     InputInfo,
@@ -164,11 +170,9 @@ def build_visual_class_guide(
 def _map_finding_geometries(
     result: VLMReviewResult,
     image: ValidatedImage,
-    crops: list[ImageCrop] | None = None,
     *,
     require_bbox: bool = False,
 ) -> VLMReviewResult:
-    crop_by_id = {crop.crop_id: crop for crop in crops or []}
     mapped = []
     issues = list(result.issues)
     for index, finding in enumerate(result.findings):
@@ -188,22 +192,17 @@ def _map_finding_geometries(
             mapped.append(finding)
             continue
         try:
-            if finding.review_pass == "full_image":
-                geometry = map_full_image_bbox(
-                    finding.bbox_normalized_xyxy,
-                    image.width,
-                    image.height,
-                )
-            else:
-                crop = crop_by_id.get(finding.crop_id or "")
-                if crop is None:
-                    raise ValueError(f"unknown crop_id: {finding.crop_id}")
-                geometry = map_crop_bbox_to_image(
-                    crop,
-                    finding.bbox_normalized_xyxy,
-                    image.width,
-                    image.height,
-                )
+            x1, y1, x2, y2 = finding.bbox_normalized_xyxy
+            geometry = BBoxGeometry.from_xyxy(
+                (
+                    x1 * image.width,
+                    y1 * image.height,
+                    x2 * image.width,
+                    y2 * image.height,
+                ),
+                image.width,
+                image.height,
+            )
         except Exception as exc:
             issues.append(
                 ReviewIssue(
@@ -326,10 +325,10 @@ class RuntimePipeline:
         successful_modules = sum(summary.status == "success" for summary in summaries)
         postprocessing_failed = False
         detection_summary_duration = None
+        candidate_selection_duration = None
         review_duration = None
-        full_image_review_duration = None
         crop_generation_duration = None
-        crop_scan_review_duration = None
+        multi_image_review_duration = None
         fusion_duration = None
         try:
             current_observations = merge_and_mark_conflicts(
@@ -389,170 +388,103 @@ class RuntimePipeline:
             review_summary.uncertain_policy = self.config.fusion.uncertain_policy
             review_summary.review_failure_policy = self.config.fusion.review_failure_policy
             provider = self.review.provider
-            if provider is not None:
-                if self.config.review.full_image.enabled:
-                    full_started = time.perf_counter()
-                    try:
-                        full_result = provider.review(image, detection_summary)
-                        full_result = _map_finding_geometries(
-                            full_result,
-                            image,
-                            require_bbox=self.config.review.require_finding_bbox,
-                        )
-                        reviewed, review_summary = self.review.apply_result(
-                            reviewed,
-                            review_summary,
-                            full_result,
-                            include_object_reviews=True,
-                            include_behavior_reviews=True,
-                        )
-                    except Exception as exc:
-                        message = str(exc) or exc.__class__.__name__
-                        errors.append(
-                            RuntimeErrorInfo(
-                                stage="review",
-                                code="review_failure",
-                                message=message,
-                            )
-                        )
-                        if "review_failure" not in review_summary.reasons:
-                            review_summary.reasons.append("review_failure")
-                        review_summary.attempted = True
-                        review_summary.passes.append(
-                            ReviewPassSummary(
-                                pass_id="full_image",
-                                attempted=True,
-                                status="failed",
-                                error=message,
-                            )
-                        )
-                        postprocessing_failed = True
-                    full_image_review_duration = (
-                        time.perf_counter() - full_started
-                    ) * 1000.0
-                    review_summary.passes[-1].duration_ms = full_image_review_duration
-                else:
-                    review_summary.passes.append(
-                        ReviewPassSummary(
-                            pass_id="full_image",
-                            enabled=False,
-                            status="not_required",
+            selection_started = time.perf_counter()
+            review_candidates = []
+            try:
+                review_candidates = select_review_candidates(
+                    reviewed,
+                    behavior_candidates,
+                    self.config.review.candidate_selection,
+                    self.config.review.low_confidence_threshold,
+                )
+            except Exception as exc:
+                errors.append(
+                    RuntimeErrorInfo(
+                        stage="candidate_selection",
+                        code="candidate_selection_failure",
+                        message=str(exc) or exc.__class__.__name__,
+                    )
+                )
+                postprocessing_failed = True
+            candidate_selection_duration = (
+                time.perf_counter() - selection_started
+            ) * 1000.0
+
+            crop_started = time.perf_counter()
+            important_crops = []
+            try:
+                important_crops = generate_important_crops(
+                    image,
+                    review_candidates,
+                    self.config.review.important_crops,
+                )
+            except Exception as exc:
+                errors.append(
+                    RuntimeErrorInfo(
+                        stage="crop_generation",
+                        code="crop_generation_failure",
+                        message=str(exc) or exc.__class__.__name__,
+                    )
+                )
+                postprocessing_failed = True
+            crop_generation_duration = (
+                time.perf_counter() - crop_started
+            ) * 1000.0
+
+            if provider is not None and self.config.review.multi_image.enabled:
+                multi_started = time.perf_counter()
+                try:
+                    result = provider.review_multi_image(
+                        MultiImageReviewRequest(
+                            image=image,
+                            summary=detection_summary,
+                            candidates=tuple(review_candidates),
+                            crops=tuple(important_crops),
                         )
                     )
-
-                crops: list[ImageCrop] = []
-                if self.config.review.crop_scan.enabled:
-                    crop_started = time.perf_counter()
-                    try:
-                        crops = generate_crops(image, self.config.review.crop_scan)
-                    except Exception as exc:
-                        message = str(exc) or exc.__class__.__name__
-                        errors.append(
-                            RuntimeErrorInfo(
-                                stage="crop_generation",
-                                code="crop_generation_failure",
-                                message=message,
-                            )
-                        )
-                        review_summary.passes.append(
-                            ReviewPassSummary(
-                                pass_id="crop_scan",
-                                attempted=False,
-                                status="failed",
-                                error=f"crop generation failed: {message}",
-                            )
-                        )
-                        postprocessing_failed = True
-                    crop_generation_duration = (
-                        time.perf_counter() - crop_started
-                    ) * 1000.0
-
-                    if crops and provider.supports_crop_scan:
-                        crop_review_started = time.perf_counter()
-                        try:
-                            crop_result = provider.review_crops(
-                                crops,
-                                image,
-                                detection_summary,
-                                review_summary,
-                            )
-                            crop_result = _map_finding_geometries(
-                                crop_result,
-                                image,
-                                crops,
-                                require_bbox=self.config.review.require_finding_bbox,
-                            )
-                            reviewed, review_summary = self.review.apply_result(
-                                reviewed,
-                                review_summary,
-                                crop_result,
-                                include_object_reviews=False,
-                                include_behavior_reviews=False,
-                            )
-                        except Exception as exc:
-                            message = str(exc) or exc.__class__.__name__
-                            errors.append(
-                                RuntimeErrorInfo(
-                                    stage="crop_scan_review",
-                                    code="crop_scan_review_failure",
-                                    message=message,
-                                )
-                            )
-                            review_summary.attempted = True
-                            review_summary.passes.append(
-                                ReviewPassSummary(
-                                    pass_id="crop_scan",
-                                    attempted=True,
-                                    status="failed",
-                                    error=message,
-                                )
-                            )
-                            postprocessing_failed = True
-                        crop_scan_review_duration = (
-                            time.perf_counter() - crop_review_started
-                        ) * 1000.0
-                        review_summary.passes[-1].duration_ms = crop_scan_review_duration
-                    elif crops:
-                        review_summary.passes.append(
-                            ReviewPassSummary(
-                                pass_id="crop_scan",
-                                status="not_required",
-                                error="provider does not support crop scan",
-                            )
-                        )
-                else:
-                    review_summary.passes.append(
-                        ReviewPassSummary(
-                            pass_id="crop_scan",
-                            enabled=False,
-                            status="not_required",
+                    result = _map_finding_geometries(
+                        result,
+                        image,
+                        require_bbox=self.config.review.require_finding_bbox,
+                    )
+                    reviewed, review_summary = self.review.apply_result(
+                        reviewed,
+                        review_summary,
+                        result,
+                    )
+                except Exception as exc:
+                    message = str(exc) or exc.__class__.__name__
+                    errors.append(
+                        RuntimeErrorInfo(
+                            stage="multi_image_review",
+                            code="multi_image_review_failure",
+                            message=message,
                         )
                     )
-
-                completed_passes = sum(
-                    item.status == "completed"
-                    for item in review_summary.passes
-                )
-                failed_passes = sum(
-                    item.status == "failed"
-                    for item in review_summary.passes
-                )
-                if failed_passes and not completed_passes:
+                    if "review_failure" not in review_summary.reasons:
+                        review_summary.reasons.append("review_failure")
+                    review_summary.attempted = True
                     review_summary.status = "failed"
-                elif completed_passes:
-                    review_summary.status = "completed"
+                    review_summary.passes.append(
+                        ReviewPassSummary(
+                            pass_id="multi_image",
+                            attempted=True,
+                            status="failed",
+                            error=message,
+                        )
+                    )
+                    postprocessing_failed = True
+                multi_image_review_duration = (
+                    time.perf_counter() - multi_started
+                ) * 1000.0
+                review_summary.passes[-1].duration_ms = multi_image_review_duration
             else:
                 review_summary.passes = [
                     ReviewPassSummary(
-                        pass_id="full_image",
-                        enabled=self.config.review.full_image.enabled,
+                        pass_id="multi_image",
+                        enabled=self.config.review.multi_image.enabled,
                         status="not_required",
-                    ),
-                    ReviewPassSummary(
-                        pass_id="crop_scan",
-                        enabled=self.config.review.crop_scan.enabled,
-                        status="not_required",
-                    ),
+                    )
                 ]
         review_duration = (time.perf_counter() - review_started) * 1000.0
 
@@ -613,10 +545,10 @@ class RuntimePipeline:
                 total=(time.perf_counter() - started) * 1000.0,
                 detection=detection_duration,
                 detection_summary=detection_summary_duration,
+                candidate_selection=candidate_selection_duration,
                 review=review_duration,
-                full_image_review=full_image_review_duration,
                 crop_generation=crop_generation_duration,
-                crop_scan_review=crop_scan_review_duration,
+                multi_image_review=multi_image_review_duration,
                 fusion=fusion_duration,
             ),
         )

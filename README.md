@@ -9,20 +9,20 @@ WRC 园区管理岗视觉识别项目。仓库同时作为 Obsidian vault，维�
 - YOLO-World 不负责垃圾；配置和 backend 都会拒绝其输出 `task_group: garbage`。
 - 模型结果统一为稳定 schema，并保留各自 `task_group`、类别、置信度、坐标和来源模型。
 - 跨任务高 IoU 结果不会被擅自删除，只会保留并标记冲突。
-- 可选 Qwen2.5-VL Review 默认固定执行两次互补请求：完整原图审核，以及一次携带全部重叠 crops 的独立漏检扫描。
-- corrected 继续复用 YOLO bbox；VLM 新 finding 必须返回 normalized bbox，由 Pipeline 映射为完整原图 geometry。
-- Fusion 跨 YOLO、全图 finding 和 crop finding 做同类 IoU 去重；不同类别高 IoU 结果保留并标记冲突。
-- 单图 Behavior Pipeline 根据基础对象生成候选，并由 Full Image Pass 确认四类不文明行为；没有基础对象时仍允许全图发现明显行为。
+- 可选 Qwen2.5-VL Review 每张图片只发送一次请求，内容包含原始图片和最多 5 个候选驱动的重点 crops。
+- corrected 继续复用 YOLO bbox；VLM 新 finding 必须返回相对原图的 normalized bbox，不再使用 crop-local 坐标。
+- Fusion 跨 YOLO 和统一 VLM findings 做同类 IoU 去重；不同类别高 IoU 结果保留并标记冲突。
+- 单图 Behavior Pipeline 根据基础对象生成候选，并由同一次多图 Review 确认四类不文明行为；没有基础对象时仍允许从原图发现明显行为。
 - TensorRT backend、正式 Thor 部署包、API、ROS2、tracking、多帧行为判断和请求级强制超时尚未实现。
 
-正式数据和训练产物只保存在 3090 Linux 工作站，不进入本仓库。两个已训练 detector 已完成 macOS 与 Thor 实际运行验证；Qwen2.5-VL 单次全图 Review 已在 Thor 跑通，新的双 Pass 链路目前只有 mock 自动测试，尚待真实服务复测。
+正式数据和训练产物只保存在 3090 Linux 工作站，不进入本仓库。两个已训练 detector 已完成 macOS 与 Thor 实际运行验证；Qwen2.5-VL 旧单图 Review 已在 Thor 跑通，Runtime V3 单次多图链路目前通过 mock 自动测试，尚待真实服务复测。
 
 ## Runtime 结构
 
 - `configs/runtime.example.yaml`：可提交的运行配置示例。
 - `src/wrc_park_vision/runtime/`：Pipeline、schema、backend、task module、行为候选、融合、review、输出和 CLI。
-- `src/wrc_park_vision/runtime/crops.py`：配置驱动的重叠 crop 生成和坐标映射。
-- `src/wrc_park_vision/runtime/vlm/`：双 Pass Review provider、Prompt Builder 和共享 Response Parser。
+- `src/wrc_park_vision/runtime/review/`：Review 策略、候选选择、重点 crop 生成和单次多图请求结构。
+- `src/wrc_park_vision/runtime/vlm/`：单次多图 Review provider、Prompt Builder 和共享 Response Parser。
 - `tests/runtime/`：不依赖真实权重的自动测试。
 - `runtime_outputs/<request_id>/result.json`：结构化结果。
 - `runtime_outputs/<request_id>/preview.jpg`：直接基于同一份最终结果绘制的预览图。
@@ -64,9 +64,9 @@ Runtime 在启动时校验 enabled 模块的模型路径，模型不存在会明
 
 固定类别的 enabled detection module 必须配置有序 `expected_class_names`。垃圾 YOLO11m 权重加载后会在处理图片前严格校验 class ID 连续性、类别数量、名称和顺序，避免错误权重静默进入 Runtime。YOLO-World 使用分组 `open_vocabulary_classes`，当前只允许 `prohibited_items` 与 `uncivilized_behavior` 基础对象。
 
-Review provider 默认关闭。启用时需在本地配置提供 OpenAI-compatible chat completions endpoint 和 Qwen2.5-VL `model_id`。默认每张图片调用两次同一 provider：Pass 1 接收完整原图并处理物体审核、明显漏检和行为；Pass 2 在一次 HTTP 请求中接收全部配置化重叠 crops，只扫描遗漏对象。两个 Pass 分别配置 timeout 和 `max_tokens`，一个 Pass 失败不阻止另一个 Pass 的合法结果进入 Fusion，顶层状态降级为 `partial_success`。
+Review provider 默认关闭。启用时需在本地配置提供 OpenAI-compatible chat completions endpoint 和 Qwen2.5-VL `model_id`。Runtime V3 每张图片只调用一次 provider：请求同时携带原始图片、Detection Summary、行为候选和最多 5 个重点 crops。重点 crops 只围绕低置信、跨模型冲突、小目标和行为候选生成，不使用固定网格。单次请求的 timeout 与 `max_tokens` 由 `review.multi_image` 配置；失败时 detector 结果保留并标记，顶层状态降级为 `partial_success`。
 
-Preview 只读取最终 `PipelineResponse`：YOLO、VLM corrected、完整原图 finding 和 crop finding 都使用最终 observation 中的同一份 bbox，不重新计算或推理；无 geometry 的行为结果显示在预览底部。`Observation.track_id` 已作为可空字段写入 schema，但当前没有实现 Tracking 或多帧融合。
+Preview 只读取最终 `PipelineResponse`：YOLO、VLM corrected 和 Multi-Image finding 都使用最终 observation 中的同一份 bbox，不重新计算或推理；无 geometry 的行为结果保留在 JSON，不扩展预览画布。`Observation.track_id` 已作为可空字段写入 schema，但当前没有实现 Tracking 或多帧融合。
 
 ## 自动测试
 

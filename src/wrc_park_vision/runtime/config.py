@@ -145,15 +145,25 @@ class ReviewPassSettings(BaseModel):
     max_tokens: Optional[int] = Field(default=None, gt=0)
 
 
-class CropScanSettings(ReviewPassSettings):
-    timeout_seconds: Optional[float] = Field(default=5.0, gt=0.0)
-    max_tokens: Optional[int] = Field(default=700, gt=0)
-    overlap: float = Field(default=0.20, ge=0.0, lt=1.0)
-    aspect_ratio_threshold: float = Field(default=1.4, gt=1.0)
-    square_rows: int = Field(default=2, gt=0)
-    square_columns: int = Field(default=2, gt=0)
-    wide_columns: int = Field(default=3, gt=0)
-    tall_rows: int = Field(default=3, gt=0)
+class CandidateSelectionSettings(BaseModel):
+    include_low_confidence: bool = True
+    include_cross_model_conflicts: bool = True
+    include_small_objects: bool = True
+    include_behavior_candidates: bool = True
+    small_object_area_ratio: float = Field(default=0.02, gt=0.0, le=1.0)
+
+
+class ImportantCropSettings(BaseModel):
+    enabled: bool = True
+    context_scale: float = Field(default=2.0, ge=1.0)
+    min_crop_size_ratio: float = Field(default=0.18, gt=0.0, le=1.0)
+    merge_iou_threshold: float = Field(default=0.20, gt=0.0, le=1.0)
+    max_crops: int = Field(default=5, ge=1, le=8)
+
+
+class MultiImageReviewSettings(ReviewPassSettings):
+    timeout_seconds: Optional[float] = Field(default=8.0, gt=0.0)
+    max_tokens: Optional[int] = Field(default=1200, gt=0)
 
 
 class ReviewSettings(BaseModel):
@@ -162,11 +172,51 @@ class ReviewSettings(BaseModel):
     review_cross_task_overlap: bool = True
     review_module_failure: bool = True
     require_finding_bbox: bool = True
-    full_image: ReviewPassSettings = Field(default_factory=ReviewPassSettings)
-    crop_scan: CropScanSettings = Field(default_factory=CropScanSettings)
+    candidate_selection: CandidateSelectionSettings = Field(
+        default_factory=CandidateSelectionSettings
+    )
+    important_crops: ImportantCropSettings = Field(default_factory=ImportantCropSettings)
+    multi_image: MultiImageReviewSettings = Field(default_factory=MultiImageReviewSettings)
     uncertain_policy: Literal["keep_flagged", "drop"] = "keep_flagged"
     review_failure_policy: Literal["keep_flagged", "drop_review_required"] = "keep_flagged"
     provider: "ReviewProviderSettings" = Field(default_factory=lambda: ReviewProviderSettings())
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_dual_pass_settings(cls, value: object) -> object:
+        """Map V2 pass settings to the single V3 request without preserving dual calls."""
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        full_image = migrated.pop("full_image", None)
+        crop_scan = migrated.pop("crop_scan", None)
+        if "multi_image" not in migrated:
+            multi_image: dict[str, object] = {}
+            legacy_passes = [
+                item for item in (full_image, crop_scan) if isinstance(item, dict)
+            ]
+            if legacy_passes:
+                multi_image["enabled"] = any(
+                    bool(item.get("enabled", True)) for item in legacy_passes
+                )
+            preferred = (
+                full_image
+                if isinstance(full_image, dict)
+                else crop_scan
+                if isinstance(crop_scan, dict)
+                else None
+            )
+            if preferred is not None:
+                for key in ("timeout_seconds", "max_tokens"):
+                    if key in preferred:
+                        multi_image[key] = preferred[key]
+            if multi_image:
+                migrated["multi_image"] = multi_image
+        if "important_crops" not in migrated and isinstance(crop_scan, dict):
+            migrated["important_crops"] = {
+                "enabled": crop_scan.get("enabled", True),
+            }
+        return migrated
 
 
 class ReviewProviderSettings(BaseModel):

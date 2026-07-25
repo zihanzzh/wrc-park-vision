@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -54,8 +55,10 @@ class _RawFinding(BaseModel):
     reasoning: Optional[str] = None
     bbox_normalized_xyxy: Optional[tuple[float, float, float, float]] = None
     crop_id: Optional[str] = None
-    review_pass: Optional[Literal["full_image", "crop_scan"]] = None
-    geometry_source: Optional[Literal["vlm_full_image", "vlm_crop"]] = None
+    review_pass: Optional[Literal["full_image", "crop_scan", "multi_image"]] = None
+    geometry_source: Optional[
+        Literal["vlm_full_image", "vlm_crop", "vlm_multi_image"]
+    ] = None
 
     @field_validator("task_group", "class_name", "crop_id", mode="before")
     @classmethod
@@ -134,7 +137,7 @@ def _item_issue(
     observation_id: str | None = None,
     candidate_id: str | None = None,
     crop_id: str | None = None,
-    review_pass: Literal["full_image", "crop_scan"] | None = None,
+    review_pass: Literal["full_image", "crop_scan", "multi_image"] | None = None,
 ) -> ReviewIssue:
     return ReviewIssue(
         section=section,  # type: ignore[arg-type]
@@ -172,9 +175,10 @@ def parse_review_response(
     summary: DetectionSummary,
     class_catalog: dict[str, list[str]],
     *,
-    review_pass: Literal["full_image", "crop_scan"] = "full_image",
+    review_pass: Literal["full_image", "crop_scan", "multi_image"] = "full_image",
     require_finding_bbox: bool = False,
     valid_crop_ids: set[str] | None = None,
+    required_review_observation_ids: Sequence[str] | None = None,
 ) -> ParsedReviewResponse:
     """Keep valid items and report invalid siblings without inventing semantics."""
     try:
@@ -184,12 +188,20 @@ def parse_review_response(
     if not isinstance(payload, dict):
         raise ReviewResponseError("invalid VLM review response: top-level value must be an object")
 
-    expected_ids = [
-        item.observation_id
-        for item in summary.detections
-        if review_pass == "full_image"
-    ]
     summary_by_id = {item.observation_id: item for item in summary.detections}
+    if required_review_observation_ids is None:
+        expected_ids = [
+            item.observation_id
+            for item in summary.detections
+            if review_pass != "crop_scan"
+        ]
+    else:
+        required_ids = set(required_review_observation_ids)
+        expected_ids = [
+            item.observation_id
+            for item in summary.detections
+            if item.observation_id in required_ids
+        ]
     issues: list[ReviewIssue] = []
     decisions_by_id: dict[str, VLMReviewDecision] = {}
     for index, value in enumerate(_section_items(payload, "yolo_reviews", issues)):
@@ -214,6 +226,18 @@ def parse_review_response(
                     index,
                     "unknown_observation",
                     f"unknown observation_id: {observation_id}",
+                    observation_id=observation_id,
+                    review_pass=review_pass,
+                )
+            )
+            continue
+        if observation_id not in expected_ids:
+            issues.append(
+                _item_issue(
+                    "yolo_reviews",
+                    index,
+                    "unexpected_observation_review",
+                    f"observation_id is not required for review: {observation_id}",
                     observation_id=observation_id,
                     review_pass=review_pass,
                 )
@@ -317,9 +341,11 @@ def parse_review_response(
                 raise ReviewResponseError(
                     f"finding review_pass must be {review_pass}, got {item.review_pass}"
                 )
-            expected_geometry_source = (
-                "vlm_full_image" if review_pass == "full_image" else "vlm_crop"
-            )
+            expected_geometry_source = {
+                "full_image": "vlm_full_image",
+                "crop_scan": "vlm_crop",
+                "multi_image": "vlm_multi_image",
+            }[review_pass]
             if (
                 item.geometry_source is not None
                 and item.geometry_source != expected_geometry_source
@@ -333,16 +359,26 @@ def parse_review_response(
             if review_pass == "full_image":
                 if item.crop_id is not None:
                     raise ReviewResponseError("full-image finding must not include crop_id")
-            else:
+            elif review_pass == "crop_scan":
                 if item.crop_id is None:
                     raise ReviewResponseError("crop-scan finding requires crop_id")
                 if valid_crop_ids is not None and item.crop_id not in valid_crop_ids:
                     raise ReviewResponseError(f"unknown crop_id: {item.crop_id}")
+            elif (
+                item.crop_id is not None
+                and valid_crop_ids is not None
+                and item.crop_id not in valid_crop_ids
+            ):
+                raise ReviewResponseError(f"unknown crop_id: {item.crop_id}")
             finding = VLMFinding(
                 id=(
                     f"vlm-full-{len(findings) + 1:04d}"
                     if review_pass == "full_image"
-                    else f"vlm-crop-{len(findings) + 1:04d}"
+                    else (
+                        f"vlm-crop-{len(findings) + 1:04d}"
+                        if review_pass == "crop_scan"
+                        else f"vlm-multi-{len(findings) + 1:04d}"
+                    )
                 ),
                 task_group=item.task_group,
                 class_id=class_id,
@@ -369,7 +405,7 @@ def parse_review_response(
             continue
         findings.append(finding)
 
-    known_observation_ids = set(expected_ids)
+    known_observation_ids = set(summary_by_id)
     behavior_classes = {item.class_name: item for item in summary.behavior_classes}
     candidates = {item.id: item for item in summary.behavior_candidates}
     behaviors: list[VLMBehaviorDecision] = []
