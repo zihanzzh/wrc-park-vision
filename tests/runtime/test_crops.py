@@ -32,6 +32,23 @@ def make_image(width: int = 200, height: int = 100) -> ValidatedImage:
 
 
 class ReviewCropTests(unittest.TestCase):
+    def test_crop_covering_most_of_original_image_is_skipped(self) -> None:
+        candidate = ReviewCandidate(
+            candidate_id="candidate-large",
+            bbox_normalized_xyxy=(0.05, 0.05, 0.95, 0.95),
+            reasons=("behavior_candidate",),
+            observation_ids=("obs-0001",),
+            priority=3,
+        )
+
+        crops = generate_important_crops(
+            make_image(100, 100),
+            [candidate],
+            ImportantCropSettings(skip_crop_area_ratio=0.8),
+        )
+
+        self.assertEqual(crops, [])
+
     def test_selects_low_confidence_conflict_small_and_behavior_candidates(self) -> None:
         low = make_observation(
             "garbage", "garbage", 0, "bottle", 0.3, (10, 10, 40, 40), (200, 100)

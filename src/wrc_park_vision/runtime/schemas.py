@@ -21,6 +21,7 @@ FindingGeometrySource = Literal["vlm_full_image", "vlm_crop", "vlm_multi_image"]
 FusionStatus = Literal["not_run", "completed", "fallback"]
 FusionAction = Literal[
     "keep_yolo",
+    "keep_detector_result",
     "keep_uncertain",
     "drop_uncertain",
     "keep_review_failed",
@@ -306,6 +307,27 @@ class VLMReviewResult(BaseModel):
     findings: list[VLMFinding] = Field(default_factory=list)
     behaviors: list[VLMBehaviorDecision] = Field(default_factory=list)
     issues: list[ReviewIssue] = Field(default_factory=list)
+    metrics: Optional["VLMRequestMetrics"] = None
+
+
+class VLMRequestMetrics(BaseModel):
+    prompt_build_ms: Optional[float] = Field(default=None, ge=0.0)
+    original_image_encode_ms: Optional[float] = Field(default=None, ge=0.0)
+    crops_encode_ms: Optional[float] = Field(default=None, ge=0.0)
+    request_json_serialize_ms: Optional[float] = Field(default=None, ge=0.0)
+    request_payload_bytes: Optional[int] = Field(default=None, ge=0)
+    image_count: Optional[int] = Field(default=None, ge=0)
+    encoded_image_bytes_total: Optional[int] = Field(default=None, ge=0)
+    prompt_character_count: Optional[int] = Field(default=None, ge=0)
+    required_review_count: Optional[int] = Field(default=None, ge=0)
+    crop_count: Optional[int] = Field(default=None, ge=0)
+    vlm_http_round_trip_ms: Optional[float] = Field(default=None, ge=0.0)
+    response_content_length: Optional[int] = Field(default=None, ge=0)
+    response_parse_ms: Optional[float] = Field(default=None, ge=0.0)
+    finish_reason: Optional[str] = None
+    prompt_tokens: Optional[int] = Field(default=None, ge=0)
+    completion_tokens: Optional[int] = Field(default=None, ge=0)
+    total_tokens: Optional[int] = Field(default=None, ge=0)
 
 
 class FusionDecision(BaseModel):
@@ -370,6 +392,7 @@ class ReviewSummary(BaseModel):
     findings: list[VLMFinding] = Field(default_factory=list)
     behaviors: list[VLMBehaviorDecision] = Field(default_factory=list)
     issues: list[ReviewIssue] = Field(default_factory=list)
+    metrics: Optional[VLMRequestMetrics] = None
     passes: list["ReviewPassSummary"] = Field(default_factory=list)
     uncertain_policy: Literal["keep_flagged", "drop"] = "keep_flagged"
     review_failure_policy: Literal["keep_flagged", "drop_review_required"] = "keep_flagged"
@@ -399,6 +422,7 @@ class RuntimeErrorInfo(BaseModel):
         "crop_generation",
         "crop_scan_review",
         "multi_image_review",
+        "deadline",
         "output",
     ]
     code: str
@@ -408,7 +432,9 @@ class RuntimeErrorInfo(BaseModel):
 
 class TimingInfo(BaseModel):
     total: float = Field(ge=0.0)
+    model_initialization: Optional[float] = Field(default=None, ge=0.0)
     detection: Optional[float] = Field(default=None, ge=0.0)
+    detection_wall_time: Optional[float] = Field(default=None, ge=0.0)
     detection_summary: Optional[float] = Field(default=None, ge=0.0)
     candidate_selection: Optional[float] = Field(default=None, ge=0.0)
     review: Optional[float] = Field(default=None, ge=0.0)
@@ -417,7 +443,17 @@ class TimingInfo(BaseModel):
     crop_scan_review: Optional[float] = Field(default=None, ge=0.0)
     multi_image_review: Optional[float] = Field(default=None, ge=0.0)
     fusion: Optional[float] = Field(default=None, ge=0.0)
+    competition_response_adapter: Optional[float] = Field(default=None, ge=0.0)
     preview: Optional[float] = Field(default=None, ge=0.0)
+    output_serialization: Optional[float] = Field(default=None, ge=0.0)
+    prompt_build: Optional[float] = Field(default=None, ge=0.0)
+    original_image_encode: Optional[float] = Field(default=None, ge=0.0)
+    crops_encode: Optional[float] = Field(default=None, ge=0.0)
+    request_json_serialize: Optional[float] = Field(default=None, ge=0.0)
+    vlm_http_round_trip: Optional[float] = Field(default=None, ge=0.0)
+    response_parse: Optional[float] = Field(default=None, ge=0.0)
+    deadline_remaining_ms: Optional[float] = None
+    degraded_reason: Optional[str] = None
 
 
 class PipelineResponse(BaseModel):

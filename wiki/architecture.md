@@ -14,7 +14,7 @@ Robot sends one image
   -> Run behavior pipeline
   -> Normalize detections and build Detection Summary
   -> Select low-confidence, conflict, small-object and behavior candidates
-  -> Generate at most five merged important crops
+  -> Generate at most three merged important crops by default
   -> Optional Qwen2.5-VL reviews original image and crops in one request
   -> Fuse/deduplicate original-image-coordinate findings
   -> Return PipelineResponse, JSON and Preview
@@ -33,6 +33,8 @@ Robot sends one image
 - crops 只围绕重要候选生成、合并和限量，不使用固定网格；原图和全部 crops 在同一次 HTTP 请求中发送。
 - 原始 YOLO observations、VLM findings 和最终 fusion decisions 必须同时保留。
 - 10 秒是完整链路目标；是否满足必须在 Thor 上实测，当前不作未经验证的性能承诺。
+- 10 秒 deadline 只负责异常保护；只有 VLM 实际完成且非 degraded 的 warm-run 才参与性能验收。
+- 内部 `PipelineResponse` 与 Competition SDK Response V1 通过独立 adapter 隔离。
 
 该路线是比赛时间限制下的风险控制方案。数据正确性和可交付性优先于单模型架构的简洁性。
 
@@ -51,12 +53,12 @@ image path
   -> 跨 task_group IoU 冲突标记
   -> 生成 Detection Summary
   -> 选择低置信、冲突、小目标和行为候选
-  -> 生成并合并最多 5 个重点 crops
+  -> 生成并合并默认最多 3 个重点 crops，跳过接近全图的重复 crop
   -> 可选 Qwen2.5-VL 单次 Multi-Image Review
   -> 将 finding 原图 normalized bbox 转为 canonical geometry
   -> Final Fusion 生成显式决策
   -> PipelineResponse
-  -> result.json
+  -> result.json / competition_result.json
   -> 使用同一个 PipelineResponse 绘制 preview.jpg
 ```
 
@@ -77,8 +79,8 @@ image path
 - 新 finding 的原图 normalized bbox 经过合法性检查和 `[0,1]` 裁剪；单条无效 finding 只产生 `ReviewIssue`。
 - Final Fusion 对最终 observations 应用 confirmed / corrected / rejected / uncertain 语义；corrected 复用 YOLO bbox 和 confidence，原始检测信息保留在 Detection Summary、Review 和 FusionDecision 中。
 - Fusion 对同类结果按配置化 IoU 去重，并保留 merged source trace；不同类别重叠结果双方保留并标记 conflict。
-- 当前只支持单张图片路径 CLI、顺序执行和耗时记录。
-- 当前没有实现 API、ROS2、tracking、并行执行、请求级 deadline 或 TensorRT backend；provider HTTP timeout 已配置为 10 秒。
+- 当前只支持单张图片路径 CLI；detector 执行支持配置化 sequential / parallel，默认 sequential。
+- 已实现请求级 10 秒预算、VLM 剩余 timeout、详细 VLM timing、Competition adapter 和降级状态；当前没有实现 API、ROS2、tracking 或 TensorRT backend。
 - Runtime 要求 Python 3.10 或更高版本。
 
 ## 路线变更原因
@@ -105,7 +107,7 @@ Runtime v1 当前负责：
 - 隔离单模块异常，并返回 `success`、`partial_success` 或 `failed`；schema 仍接受历史值 `failure`。
 - 输出统一 JSON 和直接复用最终 observation 的 Preview。
 
-请求级 10 秒预算、模块 timeout 和降级中断仍是 Thor 阶段待实现能力。
+请求级 10 秒预算已实现；VLM 请求失败或剩余时间不足时按 `review_failure_policy` 降级并返回 Competition Response。操作系统调度、冷启动和外部传输无法由进程内 deadline 绝对保证。
 
 ### 2. Prohibited Items Detector
 
@@ -227,7 +229,7 @@ Runtime v1 采用保守规则：
 - Summary 只提供上下文；Qwen2.5-VL 始终接收完整原图，并额外接收少量重点 crops。
 - VLM 对每条 YOLO detection 返回 `confirmed`、`rejected`、`corrected` 或 `uncertain`。
 - Candidate Selector 从低置信、跨模型冲突、小目标和 behavior candidates 中选择重点区域。
-- Crop Generator 围绕候选扩展上下文、合并高重叠区域并按优先级保留最多 5 个 crops；没有候选时不虚构固定网格。
+- Crop Generator 围绕候选扩展上下文、合并高重叠区域并按优先级默认保留最多 3 个 crops；接近全图的 crop 不重复发送，没有候选时不虚构固定网格。
 - 单次 multi-image 响应通过 `new_findings` 报告漏检目标，并通过 `behavior_reviews` 确认或否定行为；无 candidate 时仍可从原图发现明显行为。
 - 所有 finding bbox 都相对完整原图归一化。`crop_id` 只表示帮助判断的 crop，不改变坐标系。
 - parser 分别解析 observation review、finding 和 behavior review。非法项、缺失项、重复 ID 或非法类别写入 `ReviewIssue`，合法项继续进入 Fusion；顶层响应无法解析时才整体失败。
@@ -243,6 +245,7 @@ Runtime v1 采用保守规则：
 - `fusion.decisions` 明确记录保留、拒绝、纠正、新增 finding、同类去重和异类冲突。
 - `geometry_source: yolo` 表示 confirmed/corrected 坐标来自 YOLO；Runtime V3 新 finding 使用 `vlm_multi_image`。
 - Preview 从最终 `PipelineResponse.observations` 读取同一份 geometry，绘制 detector、corrected、Multi-Image finding 和 flagged 状态，不重新计算 bbox。
+- Competition adapter 从同一份最终 observations 生成精简对象/行为响应；rejected 不进入 SDK objects。
 
 ### 10. 10 秒预算与降级
 
@@ -257,9 +260,9 @@ Runtime 应支持：
 - 对未确认结果返回 `suspected` / `uncertain`。
 - 记录各阶段耗时和降级原因。
 
-当前单次 Multi-Image Review 有配置化 HTTP timeout 和 `max_tokens`；完整请求级 deadline、跨阶段共享预算和主动取消仍待实现。请求、响应解析或 Fusion 失败时，Runtime 保留 detector 结果并返回 `partial_success`。
+Runtime 从图片处理开始计算总 deadline，并在调用 VLM 前扣除已用时间与 Fusion/输出预留。VLM timeout 取 multi-image、provider 与 remaining 的最小值；remaining 不足时跳过请求，required observations 按失败策略处理。请求、响应解析或 Fusion 失败时，Runtime 保留可用 detector 结果并返回 `partial_success`。
 
-三模型是否能在 10 秒内完成尚未验证。最终依据 Thor benchmark 决定串行/并行、模型尺寸和触发策略。
+降级在 10 秒内返回不等于性能达标。Thor benchmark 必须预热并运行至少 5 次，且每次 VLM 实际完成、非 degraded，warm median total 小于 10 秒。当前尚未执行该真实验收。
 
 ### 11. 日志与数据回流
 
@@ -335,7 +338,8 @@ TensorRT engine 应在 Thor 实际环境中构建或验证，避免脱离目标 
 - 已完成：共享多模型 Runtime detector 链路，并在 macOS 与 Thor 跑通两个真实模型。
 - 已完成：Detection Summary、Qwen2.5-VL provider interface、全图 Prompt Builder、严格 Response Parser、Final Fusion 和更新后的 Preview。
 - 已完成：可选 YOLO-World object detector backend、分组开放词汇配置、prompt 到 canonical 类别映射和 mock 自动测试；尚未完成真实权重 Runtime smoke test。
-- 下一步：连接真实 Qwen2.5-VL endpoint，检查 JSON / Preview 与人工判断的一致性。
+- 已完成：请求级 deadline、VLM 详细 timing、Competition SDK Response V1 adapter 和状态化 Preview。
+- 下一步：在 Thor 预热真实 Qwen2.5-VL endpoint，执行至少 5 次非降级 warm-run benchmark，并检查 JSON / Preview 与人工判断的一致性。
 - 下一步：评估两个模型的误报、漏报、冲突和各类表现。
 - 下一步：在 Thor 构建多个 TensorRT engine，并 benchmark 串行/并行策略。
 - 后续：接入 behavior module、机器人接口和 TensorRT backend。

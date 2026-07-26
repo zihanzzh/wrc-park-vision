@@ -15,6 +15,7 @@ class MultiImageReviewRequest:
     summary: DetectionSummary
     candidates: tuple[ReviewCandidate, ...] = ()
     crops: tuple[ReviewCrop, ...] = ()
+    timeout_seconds: float | None = None
 
     @property
     def required_review_observation_ids(self) -> tuple[str, ...]:

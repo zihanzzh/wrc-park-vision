@@ -128,14 +128,16 @@ def fuse_review_results(
     for source_observation in observations:
         observation = source_observation.model_copy(deep=True)
         review_decision = review_by_id.get(observation.id)
-        action = "keep_yolo"
+        action = "keep_detector_result"
         final_task_group = observation.task_group
         final_class_name = observation.class_name
         reasoning = None
         keep_observation = True
         if review_decision is not None:
             reasoning = review_decision.reasoning
-            if review_decision.verdict == "rejected":
+            if review_decision.verdict == "confirmed":
+                action = "keep_yolo"
+            elif review_decision.verdict == "rejected":
                 action = "reject_yolo"
                 keep_observation = False
             elif review_decision.verdict == "corrected":
@@ -164,7 +166,9 @@ def fuse_review_results(
                     keep_observation = False
             if review_decision.confidence is not None:
                 observation.metadata["vlm_review_confidence"] = review_decision.confidence
-        elif review.attempted or review.status == "failed":
+        elif (
+            review.attempted or review.status == "failed"
+        ) and source_observation.review.required:
             action = "keep_review_failed"
             observation.review.required = True
             observation.review.status = "pending"

@@ -17,7 +17,7 @@
 - 两个已训练 detector 已在 macOS 和 NVIDIA Thor 上完成 Runtime 实际运行验证。
 - 当前共享 Runtime V3 已形成 Detection -> Detection Summary -> 重点候选与 crops -> 单次多图 Review -> Fusion -> Output 链路。
 - 准备 NVIDIA Jetson AGX Thor Developer Kit 的多模型部署和 TensorRT 验证。
-- 接入真实 Qwen2.5-VL 服务并验证 10 秒超时与降级行为。
+- 在 Thor 上复测真实 Qwen2.5-VL 单次多图链路，并验证非降级 warm-run 是否稳定低于 10 秒。
 
 不文明行为尚未形成独立训练数据集和专用模型；当前已实现单图 Behavior Pipeline，使用 YOLO-World 基础对象、配置化候选规则和同一次多图 Qwen Review 共同判断四类行为。
 
@@ -46,13 +46,15 @@
 - 已实现 Detection Summary、候选驱动重点裁剪、Qwen2.5-VL 单次多图 provider、统一 Prompt、逐项容错 Parser 和最终 Fusion。
 - 已实现配置驱动的单图 Behavior Pipeline：基础对象只生成候选，最终行为必须由同一次 VLM Review 确认；无候选时仍允许从原图发现明显行为。
 - 当前正式行为类别为 `trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。
-- Pass 1 接收完整原图和 Detection Summary，负责确认、拒绝、纠正 YOLO、明显漏检和行为；Pass 2 在一次请求中接收全部重叠 crops，独立扫描小目标。
-- corrected 始终复用 YOLO bbox；VLM 新 finding 必须提供 full-image 或 crop-relative normalized bbox，由 Pipeline 转为完整原图 geometry。
+- 单次 Multi-Image Review 同时接收完整原图、紧凑 Detection Summary 和少量候选驱动 crops，完成确认、拒绝、纠正、漏检和行为判断。
+- corrected 始终复用 YOLO bbox；VLM 新 finding 必须提供相对完整原图的 normalized bbox。
 - Fusion 对同类高 IoU 结果去重，并保留来源追踪；不同类别高 IoU 结果不静默删除。
 - JSON 与 Preview 使用同一个最终 `PipelineResponse`，Preview 不重新推理或重算 bbox。
 - Fusion 或 Review 失败不会删除成功模块的 observations；结果保留并以 `partial_success` 和阶段错误返回。
 - `Observation.track_id` 已预留且单图流程默认为 `null`；Tracking 和多帧融合尚未实现。
-- 当前执行策略固定为 sequential，分别记录 detection、候选选择、重点 crop 生成、单次 Multi-Image Review、Fusion 和 Preview 耗时；完整请求级 10 秒 deadline 尚未实现。
+- detector 执行支持 sequential / parallel 配置，默认 sequential；Runtime 分别记录模型初始化、detection wall time、候选、crop、VLM 请求链路、Fusion、Competition adapter、序列化和 Preview 耗时。
+- 已实现请求级 10 秒总预算：VLM timeout 受剩余预算约束，失败时 required observations 按策略降级；这只是安全保护，不能替代真实 VLM 完成后的 Thor 性能验收。
+- 已新增独立 Competition SDK Response V1 adapter，保留完整内部 RuntimeResult；官方机器人 SDK 字段和坐标协议仍待确认。
 - Behavior 的单图语义链路已实现；多帧、tracking、pose/区域关系增强和 TensorRT 仍是后续扩展。Qwen 旧单图 Review 已在 Thor 跑通，Runtime V3 单次多图链路尚待真实 VLM 服务复测。
 
 核心自动测试使用 FakeBackend 和 mock HTTP，不调用真实 YOLO 或 VLM；detector 实际运行已由 macOS 与 Thor 验证。

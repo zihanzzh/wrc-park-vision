@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import json
 import unittest
+from io import BytesIO
 from unittest.mock import patch
 
 from PIL import Image
@@ -141,7 +143,7 @@ class VLMReviewTests(unittest.TestCase):
         self.assertIn("原始完整图片", prompt)
         self.assertIn("prohibited_items, garbage, uncivilized_behavior", prompt)
         self.assertIn("trampling_grass, smoking, blocking_fire_lane, standing_or_lying_on_bench", prompt)
-        self.assertIn('"observation_id":"obs-0001"', prompt)
+        self.assertIn('"id":"obs-0001"', prompt)
         self.assertIn('"verdict":"uncertain"', prompt)
         self.assertIn('"speaker"', prompt)
         self.assertIn("behavior_candidates", prompt)
@@ -151,6 +153,10 @@ class VLMReviewTests(unittest.TestCase):
         self.assertNotIn("类别名称", prompt)
         self.assertNotIn("填写", prompt)
         self.assertIn("只输出一个 JSON object", prompt)
+        self.assertIn("uncertain 只用于图像确实无法判断", prompt)
+        self.assertIn("confirmed plastic_drink_bottle", prompt)
+        self.assertIn("rejected spray_can", prompt)
+        self.assertNotIn('"reasoning":null', prompt)
 
     def test_prompt_uses_compact_visual_guide_for_enabled_classes(self) -> None:
         prompt = build_review_prompt(
@@ -164,9 +170,8 @@ class VLMReviewTests(unittest.TestCase):
         self.assertIn("站立踏板连接直立转向杆，顶部有车把", prompt)
         self.assertIn("燃烧器、锅架或气罐舱", prompt)
         self.assertIn("开放式烧烤炉体", prompt)
-        self.assertIn("明显揉皱成团的纸", prompt)
-        self.assertIn("瓶口、瓶盖、瓶身或标签结构", prompt)
-        self.assertIn("薄而柔软的食品塑料包装", prompt)
+        self.assertIn('"garbage":["crumpled_paper_ball"', prompt)
+        self.assertNotIn("明显揉皱成团的纸", prompt)
         self.assertNotIn("roller_skates", prompt)
         self.assertNotIn("允许的 task_group", prompt)
         self.assertNotIn("允许的 class_name", prompt)
@@ -196,10 +201,10 @@ class VLMReviewTests(unittest.TestCase):
         template = prompt_output_template(prompt)
 
         self.assertEqual(
-            [item["observation_id"] for item in template["yolo_reviews"]],
+            [item["id"] for item in template["yolo_reviews"]],
             ["obs-0001"],
         )
-        self.assertIn('"observation_id":"obs-0002"', prompt)
+        self.assertIn('"id":"obs-0002"', prompt)
         self.assertIn(
             "未列入该数组的 detection 不需要输出 decision，系统默认保留",
             prompt,
@@ -350,6 +355,29 @@ class VLMReviewTests(unittest.TestCase):
         self.assertIsNone(parsed.findings[0].reasoning)
         self.assertEqual(parsed.behaviors, [])
         self.assertEqual(parsed.issues, [])
+
+    def test_parser_accepts_compact_review_fields(self) -> None:
+        parsed = parse_review_response(
+            json.dumps(
+                {
+                    "yolo_reviews": [
+                        {
+                            "id": "obs-0001",
+                            "verdict": "corrected",
+                            "task_group": "prohibited_items",
+                            "class_name": "speaker",
+                        }
+                    ],
+                    "new_findings": [],
+                    "behavior_reviews": [],
+                }
+            ),
+            make_summary(),
+            CATALOG,
+        )
+
+        self.assertEqual(parsed.decisions[0].verdict, "corrected")
+        self.assertEqual(parsed.decisions[0].corrected_class_name, "speaker")
 
     def test_invalid_yolo_review_does_not_drop_valid_sibling(self) -> None:
         summary = make_summary().model_copy(
@@ -668,6 +696,7 @@ class VLMReviewTests(unittest.TestCase):
             enabled=True,
             endpoint="http://localhost:8000/v1/chat/completions",
             model_id="Qwen2.5-VL",
+            image_max_side=64,
         )
         provider = Qwen25VLProvider(
             settings,
@@ -684,6 +713,7 @@ class VLMReviewTests(unittest.TestCase):
         response_payload = {
             "choices": [
                 {
+                    "finish_reason": "stop",
                     "message": {
                         "content": json.dumps(
                             {
@@ -695,7 +725,12 @@ class VLMReviewTests(unittest.TestCase):
                         )
                     }
                 }
-            ]
+            ],
+            "usage": {
+                "prompt_tokens": 123,
+                "completion_tokens": 45,
+                "total_tokens": 168,
+            },
         }
 
         class FakeResponse:
@@ -723,11 +758,21 @@ class VLMReviewTests(unittest.TestCase):
         self.assertIn("一次完成", content[0]["text"])
         self.assertEqual(content[1]["text"], "image_id=original_image")
         self.assertTrue(content[2]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+        encoded = content[2]["image_url"]["url"].split(",", 1)[1]
+        with Image.open(BytesIO(base64.b64decode(encoded))) as sent_image:
+            self.assertEqual(sent_image.size, (64, 51))
         self.assertIn("带喷嘴或喷头的加压气雾罐", content[0]["text"])
         self.assertEqual(captured["calls"], 1)
-        self.assertEqual(captured["timeout"], 10.0)
+        self.assertEqual(captured["timeout"], 8.0)
         self.assertEqual(result.review_pass, "multi_image")
         self.assertEqual(result.decisions[0].verdict, "confirmed")
+        self.assertEqual(result.metrics.finish_reason, "stop")
+        self.assertEqual(result.metrics.prompt_tokens, 123)
+        self.assertEqual(result.metrics.completion_tokens, 45)
+        self.assertEqual(result.metrics.total_tokens, 168)
+        self.assertEqual(result.metrics.image_count, 1)
+        self.assertGreater(result.metrics.request_payload_bytes, 0)
+        self.assertGreater(result.metrics.encoded_image_bytes_total, 0)
 
     def test_qwen_sends_original_and_all_important_crops_in_one_request(self) -> None:
         settings = ReviewProviderSettings(
@@ -838,7 +883,12 @@ class VLMReviewTests(unittest.TestCase):
         image = ValidatedImage("image.jpg", Image.new("RGB", (100, 80), "white"), 100, 80)
         raw_content = "not-json-start " + ("x" * 1000) + " hidden-tail"
         response_payload = {
-            "choices": [{"message": {"content": raw_content}}],
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"content": raw_content},
+                }
+            ],
         }
 
         class FakeResponse:
@@ -857,6 +907,7 @@ class VLMReviewTests(unittest.TestCase):
 
         message = str(raised.exception)
         self.assertIn("raw_response_excerpt='not-json-start", message)
+        self.assertIn("finish_reason='length'", message)
         self.assertIn("...", message)
         self.assertNotIn("hidden-tail", message)
         self.assertLess(len(message), 800)

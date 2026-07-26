@@ -11,8 +11,8 @@ from ..schemas import BBoxGeometry, BehaviorCandidate, Float4, Observation
 REASON_PRIORITY = {
     "small_object": 1,
     "low_confidence": 2,
-    "cross_model_conflict": 3,
-    "behavior_candidate": 4,
+    "behavior_candidate": 3,
+    "cross_model_conflict": 4,
 }
 
 

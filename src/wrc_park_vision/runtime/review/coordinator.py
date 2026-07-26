@@ -149,6 +149,7 @@ class ReviewCoordinator:
         merged.findings.extend(result.findings)
         merged.behaviors.extend(result.behaviors)
         merged.issues.extend(result.issues)
+        merged.metrics = result.metrics
         merged.passes.append(
             ReviewPassSummary(
                 pass_id="multi_image",
@@ -160,6 +161,20 @@ class ReviewCoordinator:
             )
         )
         return reviewed, merged
+
+    @staticmethod
+    def mark_required_observations(
+        observations: list[Observation],
+        required_observation_ids: tuple[str, ...],
+    ) -> None:
+        required_ids = set(required_observation_ids)
+        for observation in observations:
+            if observation.id not in required_ids:
+                continue
+            observation.review.required = True
+            observation.review.status = "pending"
+            if "review_candidate" not in observation.review.reasons:
+                observation.review.reasons.append("review_candidate")
 
     def apply(
         self,

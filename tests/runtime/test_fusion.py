@@ -14,6 +14,31 @@ from .helpers import make_observation
 
 
 class FusionTests(unittest.TestCase):
+    def test_non_required_observation_is_kept_without_review_failure(self) -> None:
+        observations = merge_and_mark_conflicts(
+            [
+                make_observation(
+                    "garbage",
+                    "garbage",
+                    0,
+                    "paper",
+                    0.9,
+                    (10, 10, 30, 30),
+                )
+            ],
+            0.75,
+        )
+        review = ReviewSummary(attempted=True, status="completed")
+
+        finalized, fusion = fuse_review_results(observations, review)
+
+        self.assertEqual(finalized[0].review.status, "not_required")
+        self.assertEqual(finalized[0].review.reasons, [])
+        self.assertEqual(
+            fusion.decisions[0].action,
+            "keep_detector_result",
+        )
+
     def test_cross_task_overlap_is_preserved_and_marked(self) -> None:
         first = make_observation("prohibited_items", "prohibited", 0, "spray_can", 0.9, (10, 10, 60, 60))
         second = make_observation("garbage", "garbage", 3, "plastic_bottle", 0.8, (10, 10, 60, 60))
@@ -94,6 +119,8 @@ class FusionTests(unittest.TestCase):
             [make_observation("garbage", "garbage", 0, "paper", 0.4, (10, 10, 30, 30))],
             0.75,
         )
+        observations[0].review.required = True
+        observations[0].review.status = "pending"
         review = ReviewSummary(
             attempted=True,
             status="completed",
@@ -166,6 +193,8 @@ class FusionTests(unittest.TestCase):
             [make_observation("garbage", "garbage", 0, "paper", 0.4, (10, 10, 30, 30))],
             0.75,
         )
+        observations[0].review.required = True
+        observations[0].review.status = "pending"
         review = ReviewSummary(
             required=True,
             attempted=True,

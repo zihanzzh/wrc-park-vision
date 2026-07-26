@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from wrc_park_vision.runtime.backends.base import BackendDetection
+from wrc_park_vision.runtime.competition import build_competition_response
 from wrc_park_vision.runtime.modules.detection import DetectionModule
 from wrc_park_vision.runtime.config import RuntimeConfig
 from wrc_park_vision.runtime.pipeline import (
@@ -17,6 +18,7 @@ from wrc_park_vision.runtime.pipeline import (
 from wrc_park_vision.runtime.review import ReviewProvider
 from wrc_park_vision.runtime.schemas import (
     DetectionSummary,
+    ReviewIssue,
     VLMFinding,
     VLMReviewDecision,
     VLMReviewResult,
@@ -497,6 +499,151 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(response.review.passes[0].status, "failed")
         self.assertTrue(
             any(error.code == "multi_image_review_failure" for error in response.errors)
+        )
+        self.assertTrue(build_competition_response(response).degraded)
+
+    def test_exhausted_budget_skips_vlm_and_returns_fused_result(self) -> None:
+        class CountingProvider(ReviewProvider):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def review(self, image, summary):
+                raise AssertionError("V3 pipeline must use review_multi_image")
+
+            def review_multi_image(self, request):
+                self.calls += 1
+                raise AssertionError("provider must not be called")
+
+        config = make_config(("prohibited",))
+        config.runtime.total_timeout_seconds = 0.01
+        config.review.reserve_seconds_for_fusion_and_output = 0.02
+        provider = CountingProvider()
+        module = DetectionModule(
+            "prohibited",
+            "prohibited",
+            "good",
+            FakeBackend(
+                "good",
+                [BackendDetection(0, "prohibited_class", 0.3, (10, 10, 30, 40))],
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            response = RuntimePipeline(
+                config,
+                [module],
+                review_provider=provider,
+            ).process(write_test_image(Path(directory) / "image.jpg"))
+
+        self.assertEqual(provider.calls, 0)
+        self.assertEqual(response.status, "partial_success")
+        self.assertEqual(len(response.observations), 1)
+        self.assertEqual(response.review.status, "failed")
+        self.assertEqual(
+            response.fusion.decisions[0].action,
+            "keep_review_failed",
+        )
+        self.assertTrue(
+            any(error.code == "review_deadline_exhausted" for error in response.errors)
+        )
+
+    def test_vlm_timeout_is_capped_by_remaining_runtime_budget(self) -> None:
+        class TimeoutCapturingProvider(ReviewProvider):
+            def __init__(self) -> None:
+                self.timeout_seconds = None
+
+            def review(self, image, summary):
+                raise AssertionError("V3 pipeline must use review_multi_image")
+
+            def review_multi_image(self, request):
+                self.timeout_seconds = request.timeout_seconds
+                return VLMReviewResult(
+                    provider="fake_vlm",
+                    model_id="fake-vl",
+                    duration_ms=1,
+                    review_pass="multi_image",
+                    decisions=[
+                        VLMReviewDecision(
+                            observation_id=request.required_review_observation_ids[0],
+                            verdict="confirmed",
+                        )
+                    ],
+                )
+
+        config = make_config(("prohibited",))
+        config.runtime.total_timeout_seconds = 1.0
+        config.review.reserve_seconds_for_fusion_and_output = 0.2
+        provider = TimeoutCapturingProvider()
+        module = DetectionModule(
+            "prohibited",
+            "prohibited",
+            "good",
+            FakeBackend(
+                "good",
+                [BackendDetection(0, "prohibited_class", 0.3, (10, 10, 30, 40))],
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            response = RuntimePipeline(
+                config,
+                [module],
+                review_provider=provider,
+            ).process(write_test_image(Path(directory) / "image.jpg"))
+
+        self.assertIsNotNone(provider.timeout_seconds)
+        self.assertGreater(provider.timeout_seconds, 0.0)
+        self.assertLessEqual(provider.timeout_seconds, 0.8)
+        self.assertEqual(response.review.status, "completed")
+        self.assertEqual(response.status, "success")
+
+    def test_missing_required_review_item_returns_partial_success(self) -> None:
+        class MissingItemProvider(ReviewProvider):
+            def review(self, image, summary):
+                raise AssertionError("V3 pipeline must use review_multi_image")
+
+            def review_multi_image(self, request):
+                observation_id = request.required_review_observation_ids[0]
+                return VLMReviewResult(
+                    provider="fake_vlm",
+                    model_id="fake-vl",
+                    duration_ms=1,
+                    review_pass="multi_image",
+                    issues=[
+                        ReviewIssue(
+                            section="yolo_reviews",
+                            code="missing_observation_review",
+                            message=f"missing review for {observation_id}",
+                            observation_id=observation_id,
+                            review_pass="multi_image",
+                        )
+                    ],
+                )
+
+        module = DetectionModule(
+            "prohibited",
+            "prohibited",
+            "good",
+            FakeBackend(
+                "good",
+                [BackendDetection(0, "prohibited_class", 0.3, (10, 10, 30, 40))],
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            response = RuntimePipeline(
+                make_config(("prohibited",)),
+                [module],
+                review_provider=MissingItemProvider(),
+            ).process(write_test_image(Path(directory) / "image.jpg"))
+
+        self.assertEqual(response.status, "partial_success")
+        self.assertEqual(
+            response.fusion.decisions[0].action,
+            "keep_review_failed",
+        )
+        self.assertTrue(
+            any(
+                error.code == "required_review_items_missing"
+                for error in response.errors
+            )
         )
 
     def test_initialization_failure_closes_previously_loaded_modules(self) -> None:

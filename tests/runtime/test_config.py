@@ -14,6 +14,59 @@ from wrc_park_vision.runtime.config import (
 
 
 class ConfigTests(unittest.TestCase):
+    def test_runtime_budget_vlm_encoding_and_preview_status_defaults(self) -> None:
+        config = RuntimeConfig.model_validate(
+            {
+                "modules": [
+                    {
+                        "id": "detector",
+                        "enabled": True,
+                        "type": "detection",
+                        "task_group": "garbage",
+                        "backend": "ultralytics",
+                        "model_path": "model.pt",
+                        "model_id": "model",
+                        "expected_class_names": ["paper"],
+                    }
+                ]
+            }
+        )
+
+        self.assertEqual(config.runtime.total_timeout_seconds, 10.0)
+        self.assertEqual(
+            config.review.reserve_seconds_for_fusion_and_output,
+            0.75,
+        )
+        self.assertEqual(config.review.important_crops.max_crops, 3)
+        self.assertEqual(
+            config.review.important_crops.skip_crop_area_ratio,
+            0.8,
+        )
+        self.assertEqual(config.review.provider.image_max_side, 640)
+        self.assertEqual(config.review.provider.jpeg_quality, 85)
+        self.assertIn("review_failed", config.preview.status_colors)
+
+    def test_parallel_execution_is_explicitly_configurable(self) -> None:
+        config = RuntimeConfig.model_validate(
+            {
+                "runtime": {"execution": "parallel"},
+                "modules": [
+                    {
+                        "id": "detector",
+                        "enabled": True,
+                        "type": "detection",
+                        "task_group": "garbage",
+                        "backend": "ultralytics",
+                        "model_path": "model.pt",
+                        "model_id": "model",
+                        "expected_class_names": ["paper"],
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(config.runtime.execution, "parallel")
+
     def test_environment_expansion_and_disabled_module(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -457,7 +510,7 @@ modules:
         self.assertEqual(config.fusion.review_failure_policy, "keep_flagged")
         self.assertTrue(config.review.multi_image.enabled)
         self.assertTrue(config.review.important_crops.enabled)
-        self.assertEqual(config.review.important_crops.max_crops, 5)
+        self.assertEqual(config.review.important_crops.max_crops, 3)
         self.assertEqual(config.fusion.finding_iou_threshold, 0.65)
 
     def test_legacy_review_fusion_policies_are_migrated(self) -> None:
@@ -533,8 +586,8 @@ review:
                     )
                     self.assertTrue(config.review.require_finding_bbox)
                     self.assertEqual(config.review.multi_image.timeout_seconds, 8)
-                    self.assertEqual(config.review.multi_image.max_tokens, 1200)
-                    self.assertEqual(config.review.important_crops.max_crops, 5)
+                    self.assertEqual(config.review.multi_image.max_tokens, 700)
+                    self.assertEqual(config.review.important_crops.max_crops, 3)
                     self.assertEqual(config.review.important_crops.context_scale, 2.0)
                     self.assertEqual(
                         config.review.important_crops.merge_iou_threshold,

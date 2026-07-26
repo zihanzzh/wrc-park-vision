@@ -17,6 +17,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image", type=Path, required=True, help="Input image path.")
     parser.add_argument("--no-preview", action="store_true", help="Do not generate preview.jpg.")
     parser.add_argument("--output-dir", type=Path, help="Override runtime.output_dir.")
+    parser.add_argument(
+        "--output-mode",
+        choices=("both", "internal", "competition"),
+        default="both",
+        help="Write internal result, competition result, or both.",
+    )
     return parser
 
 
@@ -32,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
             output_dir=output_dir,
             preview_settings=config.preview,
             preview_enabled=not args.no_preview,
+            output_mode=args.output_mode,
         )
     except (ConfigError, FileNotFoundError, ValueError, RuntimeError, NotImplementedError) as exc:
         print(f"runtime error: {exc}", file=sys.stderr)
@@ -46,7 +53,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"status: {response.status}")
     print(f"modules: {succeeded} succeeded, {failed} failed")
     print(f"observations: {len(response.observations)}")
-    print(f"result_json: {artifacts.json_path}")
+    print(
+        "result_json: "
+        f"{artifacts.json_path if artifacts.json_path else 'not generated'}"
+    )
+    print(
+        "competition_json: "
+        f"{artifacts.competition_json_path if artifacts.competition_json_path else 'not generated'}"
+    )
     print(f"preview: {artifacts.preview_path if artifacts.preview_path else 'not generated'}")
     print(f"total_ms: {response.timing_ms.total:.2f}")
 
@@ -59,4 +73,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

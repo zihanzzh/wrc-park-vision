@@ -2,6 +2,25 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-07-25 Runtime V3 收尾、Competition SDK 与性能测量
+
+本次受控收尾没有修改模型、权重、数据集、训练代码或 Thor 私有路径：
+
+- 修复非 candidate detector observation 被误标为 review failed：只有 required observation 请求失败、解析失败或缺项才使用 `keep_review_failed`，其余使用 `keep_detector_result`。
+- Preview 增加 corrected、uncertain、review_failed 和 unresolved conflict 状态色；corrected 显示原类别到最终类别，rejected 不作为有效框绘制。
+- 新增独立 Competition SDK Response V1 adapter、`competition_result.json` 和 CLI `--output-mode`；完整内部 `result.json` 保持可审计。
+- 新增 10 秒总预算、VLM remaining timeout 和 degraded fallback；预算不足时不调用 VLM，但该降级结果不计为性能达标。
+- VLM 请求新增 prompt、图像编码、payload、图像数、token、HTTP round trip、响应长度、解析和 finish reason 指标。
+- 默认 VLM 图像最长边 640、JPEG quality 85、最多 3 个重点 crops，并跳过面积达到原图 80% 的重复 crop；Prompt 和输出模板保持紧凑。
+- 新增 `scripts/runtime/benchmark_thor.py`，要求 readiness、warmup、至少 5 次 warm runs，且全部 VLM 完成、非 degraded、median total 小于 10 秒才返回性能通过。
+- example 配置已同步；gitignored 的机器专属 local 配置未修改。
+
+验证结果：
+
+- 全部 Runtime `unittest` 126 项通过。
+- 未安装的 `pytest` 没有擅自安装；最终 `compileall` 与 `git diff --check` 结果见本次最终报告。
+- 本次没有运行真实 YOLO/Qwen、安装依赖、commit 或 push；Thor 真实性能和 Competition 官方字段仍待确认。
+
 ## 2026-07-24 Runtime V3 候选审核输出收敛
 
 针对 V3 Prompt 要求 Qwen 为全部 detector observations 输出 `yolo_reviews`、可能增加输出 token 与超时风险的问题，本次做了严格限域修正：

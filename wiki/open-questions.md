@@ -30,6 +30,7 @@
 - 不同模型在真实照片中产生 `cross_model_overlap` 的频率是多少？是否需要增加业务规则？
 - 不同模型 confidence 是否需要校准后再比较？
 - 当前 `schema_version: 1.0` 如何封装到最终 ROS2 / HTTP / gRPC 协议，是否需要兼容字段？
+- Competition SDK Response V1 的 `frame_id`、object/behavior 字段名、pixel/normalized bbox 顺序和 confidence 语义是否符合官方 SDK？
 - Tracking 何时实现，以及正式 `track_id` 由视觉 Runtime 还是机器人系统负责？当前字段只预留，值为 `null`。
 - `suggestedAction` / 语音文案由视觉还是机器人策略层生成？
 - 真实 smoke test 使用哪些固定验收图片和期望结果？
@@ -38,9 +39,12 @@
 ## 10 秒预算与 VLM
 
 - 10 秒从图片发送、Thor 接收还是 Runtime 开始处理时计时？
-- 多个 YOLO engine、结果融合和 VLM 各分配多少预算？
+- 当前代码从 Runtime 开始处理图片计时；官方接口是否要求把传输和机器人 SDK 调用也计入同一个 10 秒窗口？
+- 多个 YOLO engine、结果融合和 VLM 的正式预算分配是否接受当前 0.75 秒 Fusion/输出预留？
 - Runtime V3 单次 Multi-Image Review 在 Thor 上的实际耗时是多少，是否能稳定把完整链路控制在 10 秒内？
-- 当前候选阈值、crop context scale、合并阈值和最多 5 个 crops 是否需要根据真实比赛分辨率调整？
+- 当前候选阈值、crop context scale、合并阈值和最多 3 个 crops 是否需要根据真实比赛分辨率调整？
+- Thor 上 VLM 输入最长边 640 与 768 的准确率/延迟差异是什么？
+- 当前 vLLM 是否确认支持 `response_format={"type":"json_object"}`，以及启用后是否改善稳定性而不增加延迟？
 - VLM 原图 normalized bbox 的真实定位误差是否足以使用默认 0.65 IoU 去重阈值？
 - Qwen / VLM 具体运行在 3090、其他高算力设备还是 Thor？
 - 比赛现场是否允许额外设备和联网？

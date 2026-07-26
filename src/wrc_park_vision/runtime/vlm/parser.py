@@ -6,7 +6,14 @@ import json
 from collections.abc import Sequence
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+)
 
 from ..schemas import (
     DetectionSummary,
@@ -25,10 +32,18 @@ class ReviewResponseError(ValueError):
 class _RawDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    observation_id: str
+    observation_id: str = Field(
+        validation_alias=AliasChoices("observation_id", "id")
+    )
     verdict: Literal["confirmed", "rejected", "corrected", "uncertain"]
-    corrected_task_group: Optional[str] = None
-    corrected_class_name: Optional[str] = None
+    corrected_task_group: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("corrected_task_group", "task_group"),
+    )
+    corrected_class_name: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("corrected_class_name", "class_name"),
+    )
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     reasoning: Optional[str] = None
 

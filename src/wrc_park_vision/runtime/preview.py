@@ -21,13 +21,6 @@ def _observation_display_source(observation: object) -> str:
     review = getattr(observation, "review", None)
     if metadata.get("review_source") == "vlm_corrected":
         return "corrected"
-    geometry_source = metadata.get("geometry_source")
-    if geometry_source == "vlm_full_image":
-        return "vlm-full"
-    if geometry_source == "vlm_crop":
-        return "vlm-crop"
-    if geometry_source == "vlm_multi_image":
-        return "vlm-multi"
     if review is not None:
         if "review_item_missing_or_failed" in review.reasons:
             return "review-failed"
@@ -35,7 +28,24 @@ def _observation_display_source(observation: object) -> str:
             return "uncertain"
         if review.status == "confirmed":
             return "confirmed"
+    if getattr(observation, "conflicts", []):
+        return "conflict"
+    geometry_source = metadata.get("geometry_source")
+    if geometry_source == "vlm_full_image":
+        return "vlm-full"
+    if geometry_source == "vlm_crop":
+        return "vlm-crop"
+    if geometry_source == "vlm_multi_image":
+        return "vlm-multi"
     return "det"
+
+
+def _observation_display_class(observation: object, status: str) -> str:
+    class_name = str(getattr(observation, "class_name", "unknown"))
+    if status != "corrected":
+        return class_name
+    original = getattr(observation, "metadata", {}).get("original_class_name")
+    return f"{original} -> {class_name}" if original else class_name
 
 
 @dataclass(frozen=True)
@@ -231,8 +241,16 @@ def render_preview(
         )
         color = _hex_to_rgb(color_text)
         source_label = _observation_display_source(observation)
-        if source_label in {"uncertain", "review-failed"}:
-            color = (107, 114, 128)
+        status_color_key = {
+            "review-failed": "review_failed",
+            "uncertain": "uncertain",
+            "corrected": "corrected",
+            "conflict": "conflict",
+        }.get(source_label)
+        if status_color_key is not None:
+            status_color = settings.status_colors.get(status_color_key)
+            if status_color is not None:
+                color = _hex_to_rgb(status_color)
         x1, y1, x2, y2 = observation.geometry.bbox_xyxy
         outline_box = (
             min(max(x1, 0.0), max(0.0, image.width - 1.0)),
@@ -244,7 +262,7 @@ def render_preview(
         layout = _layout_label(
             draw,
             font,
-            observation.class_name,
+            _observation_display_class(observation, source_label),
             observation.confidence,
             source_label,
             observation.geometry.bbox_xyxy,

@@ -1,5 +1,7 @@
 runtime:
   execution: sequential
+  # warm-run 目标；超时降级不计为性能达标。
+  total_timeout_seconds: 10.0
   output_dir: runtime_outputs
 
 modules:
@@ -137,31 +139,38 @@ review:
   review_cross_task_overlap: true
   review_module_failure: true
   require_finding_bbox: true
+  reserve_seconds_for_fusion_and_output: 0.75
   candidate_selection:
     include_low_confidence: true
     include_cross_model_conflicts: true
     include_small_objects: true
     include_behavior_candidates: true
-    small_object_area_ratio: 0.02
+    small_object_area_ratio: 0.01
   important_crops:
     enabled: true
     context_scale: 2.0
     min_crop_size_ratio: 0.18
     merge_iou_threshold: 0.20
-    max_crops: 5
+    max_crops: 3
+    # 接近全图的 crop 与 original_image 重复，不再发送。
+    skip_crop_area_ratio: 0.80
   multi_image:
     enabled: true
     timeout_seconds: 8
-    max_tokens: 1200
+    max_tokens: 700
   provider:
     enabled: false
     type: qwen2_5_vl
     endpoint: null
     model_id: null
     api_key_env: WRC_VLM_API_KEY
-    timeout_seconds: 10
-    max_tokens: 1200
+    timeout_seconds: 8
+    max_tokens: 700
     temperature: 0
+    image_max_side: 640
+    jpeg_quality: 85
+    # 仅在 Thor 当前 vLLM 明确支持 OpenAI JSON response_format 时启用。
+    response_format_json_object: false
 
 fusion:
   finding_iou_threshold: 0.65
@@ -175,3 +184,8 @@ preview:
     garbage: "#16a34a"
     uncivilized_behavior: "#2563eb"
     unknown: "#d97706"
+  status_colors:
+    corrected: "#a855f7"
+    uncertain: "#6b7280"
+    review_failed: "#f97316"
+    conflict: "#eab308"

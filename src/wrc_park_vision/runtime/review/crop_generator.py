@@ -144,7 +144,15 @@ def generate_important_crops(
     )
 
     crops: list[ReviewCrop] = []
-    for region in merged[: settings.max_crops]:
+    for region in merged:
+        area_ratio = (
+            (region.bbox[2] - region.bbox[0])
+            * (region.bbox[3] - region.bbox[1])
+        )
+        if area_ratio >= settings.skip_crop_area_ratio:
+            continue
+        if len(crops) >= settings.max_crops:
+            break
         x1 = max(0, min(image.width - 1, int(region.bbox[0] * image.width)))
         y1 = max(0, min(image.height - 1, int(region.bbox[1] * image.height)))
         x2 = max(x1 + 1, min(image.width, int(round(region.bbox[2] * image.width))))

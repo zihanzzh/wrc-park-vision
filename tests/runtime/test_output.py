@@ -30,7 +30,12 @@ class OutputTests(unittest.TestCase):
             payload = json.loads(artifacts.json_path.read_text(encoding="utf-8"))
 
         self.assertIsNotNone(artifacts.preview_path)
+        self.assertIsNotNone(artifacts.competition_json_path)
         self.assertIsNotNone(payload["timing_ms"]["preview"])
+        self.assertIsNotNone(
+            payload["timing_ms"]["competition_response_adapter"]
+        )
+        self.assertIsNotNone(payload["timing_ms"]["output_serialization"])
         self.assertGreaterEqual(payload["timing_ms"]["total"], initial_total)
 
     def test_preview_failure_keeps_json_and_observations(self) -> None:
@@ -55,6 +60,38 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(payload["observations"][0]["class_name"], "plastic_bottle")
         self.assertEqual(payload["errors"][-1]["code"], "preview_failure")
         self.assertIsNotNone(payload["timing_ms"]["preview"])
+
+    def test_competition_mode_writes_sdk_result_before_skipping_preview(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            response = make_response(
+                [
+                    make_observation(
+                        "garbage",
+                        "garbage",
+                        0,
+                        "plastic_bottle",
+                        0.91,
+                        (10, 10, 40, 60),
+                    )
+                ],
+                write_test_image(root / "image.jpg"),
+            )
+
+            artifacts = write_runtime_outputs(
+                response,
+                root / "outputs",
+                PreviewSettings(),
+                True,
+                output_mode="competition",
+            )
+            payload = json.loads(
+                artifacts.competition_json_path.read_text(encoding="utf-8")
+            )
+
+        self.assertIsNone(artifacts.json_path)
+        self.assertIsNone(artifacts.preview_path)
+        self.assertEqual(payload["objects"][0]["class_name"], "plastic_bottle")
 
 
 if __name__ == "__main__":

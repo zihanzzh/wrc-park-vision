@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -32,6 +33,7 @@ from .schemas import (
     FusionSummary,
     InputInfo,
     ModuleSummary,
+    Observation,
     PipelineResponse,
     RequestContext,
     ReviewSummary,
@@ -41,6 +43,7 @@ from .schemas import (
     TimingInfo,
     ValidatedImage,
     VLMReviewResult,
+    VLMRequestMetrics,
 )
 from .vlm import Qwen25VLProvider
 
@@ -226,6 +229,7 @@ class RuntimePipeline:
         modules: Optional[list[TaskModule]] = None,
         review_provider: Optional[ReviewProvider] = None,
     ) -> None:
+        initialization_started = time.perf_counter()
         self.config = config
         self.behavior = BehaviorPipeline(config.behavior)
         self.modules = modules if modules is not None else build_modules(config)
@@ -263,6 +267,9 @@ class RuntimePipeline:
                 except Exception:
                     pass
             raise
+        self.model_initialization_ms = (
+            time.perf_counter() - initialization_started
+        ) * 1000.0
 
     def process(
         self,
@@ -271,6 +278,7 @@ class RuntimePipeline:
         request_id: Optional[str] = None,
     ) -> PipelineResponse:
         started = time.perf_counter()
+        deadline = started + self.config.runtime.total_timeout_seconds
         resolved_request_id = request_id or str(uuid.uuid4())
         request_context = context or RequestContext()
         try:
@@ -287,39 +295,56 @@ class RuntimePipeline:
 
         summaries: list[ModuleSummary] = []
         errors: list[RuntimeErrorInfo] = []
-        observations = []
+        observations: list[Observation] = []
         detection_started = time.perf_counter()
-        for module in self.modules:
+
+        def run_module(
+            module: TaskModule,
+        ) -> tuple[list[Observation], ModuleSummary, RuntimeErrorInfo | None]:
             module_started = time.perf_counter()
             try:
-                observations.extend(module.run(image))
-                summaries.append(
+                module_observations = module.run(image)
+                return (
+                    module_observations,
                     ModuleSummary(
                         module_id=module.module_id,
                         task_group=module.task_group,
                         status="success",
-                        duration_ms=(time.perf_counter() - module_started) * 1000.0,
-                    )
+                        duration_ms=(
+                            time.perf_counter() - module_started
+                        ) * 1000.0,
+                    ),
+                    None,
                 )
             except Exception as exc:
                 message = str(exc) or exc.__class__.__name__
-                summaries.append(
+                return (
+                    [],
                     ModuleSummary(
                         module_id=module.module_id,
                         task_group=module.task_group,
                         status="failure",
                         duration_ms=(time.perf_counter() - module_started) * 1000.0,
                         error=message,
-                    )
-                )
-                errors.append(
+                    ),
                     RuntimeErrorInfo(
                         stage="module",
                         code="module_failure",
                         message=message,
                         module_id=module.module_id,
-                    )
+                    ),
                 )
+
+        if self.config.runtime.execution == "parallel" and len(self.modules) > 1:
+            with ThreadPoolExecutor(max_workers=len(self.modules)) as executor:
+                module_results = list(executor.map(run_module, self.modules))
+        else:
+            module_results = [run_module(module) for module in self.modules]
+        for module_observations, summary, error in module_results:
+            observations.extend(module_observations)
+            summaries.append(summary)
+            if error is not None:
+                errors.append(error)
 
         detection_duration = (time.perf_counter() - detection_started) * 1000.0
         successful_modules = sum(summary.status == "success" for summary in summaries)
@@ -329,6 +354,7 @@ class RuntimePipeline:
         review_duration = None
         crop_generation_duration = None
         multi_image_review_duration = None
+        vlm_metrics: VLMRequestMetrics | None = None
         fusion_duration = None
         try:
             current_observations = merge_and_mark_conflicts(
@@ -433,15 +459,36 @@ class RuntimePipeline:
 
             if provider is not None and self.config.review.multi_image.enabled:
                 multi_started = time.perf_counter()
+                review_request = MultiImageReviewRequest(
+                    image=image,
+                    summary=detection_summary,
+                    candidates=tuple(review_candidates),
+                    crops=tuple(important_crops),
+                )
+                self.review.mark_required_observations(
+                    reviewed,
+                    review_request.required_review_observation_ids,
+                )
+                remaining_seconds = (
+                    deadline
+                    - time.perf_counter()
+                    - self.config.review.reserve_seconds_for_fusion_and_output
+                )
                 try:
+                    if remaining_seconds <= 0:
+                        raise TimeoutError(
+                            "runtime deadline exhausted before VLM review"
+                        )
                     result = provider.review_multi_image(
                         MultiImageReviewRequest(
-                            image=image,
-                            summary=detection_summary,
-                            candidates=tuple(review_candidates),
-                            crops=tuple(important_crops),
+                            image=review_request.image,
+                            summary=review_request.summary,
+                            candidates=review_request.candidates,
+                            crops=review_request.crops,
+                            timeout_seconds=remaining_seconds,
                         )
                     )
+                    vlm_metrics = result.metrics
                     result = _map_finding_geometries(
                         result,
                         image,
@@ -452,23 +499,51 @@ class RuntimePipeline:
                         review_summary,
                         result,
                     )
+                    missing_required_reviews = [
+                        issue
+                        for issue in result.issues
+                        if issue.section == "yolo_reviews"
+                        and issue.code == "missing_observation_review"
+                    ]
+                    if missing_required_reviews:
+                        errors.append(
+                            RuntimeErrorInfo(
+                                stage="review",
+                                code="required_review_items_missing",
+                                message=(
+                                    f"{len(missing_required_reviews)} required "
+                                    "review item(s) were missing"
+                                ),
+                            )
+                        )
+                        postprocessing_failed = True
                 except Exception as exc:
+                    metrics = getattr(exc, "metrics", None)
+                    if isinstance(metrics, VLMRequestMetrics):
+                        vlm_metrics = metrics
                     message = str(exc) or exc.__class__.__name__
+                    error_code = (
+                        "review_deadline_exhausted"
+                        if remaining_seconds <= 0
+                        else "multi_image_review_failure"
+                    )
                     errors.append(
                         RuntimeErrorInfo(
                             stage="multi_image_review",
-                            code="multi_image_review_failure",
+                            code=error_code,
                             message=message,
                         )
                     )
                     if "review_failure" not in review_summary.reasons:
                         review_summary.reasons.append("review_failure")
-                    review_summary.attempted = True
+                    review_attempted = remaining_seconds > 0
+                    review_summary.attempted = review_attempted
                     review_summary.status = "failed"
+                    review_summary.metrics = vlm_metrics
                     review_summary.passes.append(
                         ReviewPassSummary(
                             pass_id="multi_image",
-                            attempted=True,
+                            attempted=review_attempted,
                             status="failed",
                             error=message,
                         )
@@ -519,6 +594,20 @@ class RuntimePipeline:
             postprocessing_failed = True
         fusion_duration = (time.perf_counter() - fusion_started) * 1000.0
 
+        deadline_remaining_ms = (deadline - time.perf_counter()) * 1000.0
+        if deadline_remaining_ms < 0:
+            errors.append(
+                RuntimeErrorInfo(
+                    stage="deadline",
+                    code="total_deadline_exceeded",
+                    message=(
+                        "runtime exceeded configured total timeout "
+                        f"of {self.config.runtime.total_timeout_seconds:.3f}s"
+                    ),
+                )
+            )
+            postprocessing_failed = True
+
         if successful_modules == 0:
             status = "failed"
         elif successful_modules < len(summaries) or postprocessing_failed:
@@ -543,13 +632,37 @@ class RuntimePipeline:
             errors=errors,
             timing_ms=TimingInfo(
                 total=(time.perf_counter() - started) * 1000.0,
+                model_initialization=self.model_initialization_ms,
                 detection=detection_duration,
+                detection_wall_time=detection_duration,
                 detection_summary=detection_summary_duration,
                 candidate_selection=candidate_selection_duration,
                 review=review_duration,
                 crop_generation=crop_generation_duration,
                 multi_image_review=multi_image_review_duration,
                 fusion=fusion_duration,
+                prompt_build=(
+                    vlm_metrics.prompt_build_ms if vlm_metrics else None
+                ),
+                original_image_encode=(
+                    vlm_metrics.original_image_encode_ms if vlm_metrics else None
+                ),
+                crops_encode=(
+                    vlm_metrics.crops_encode_ms if vlm_metrics else None
+                ),
+                request_json_serialize=(
+                    vlm_metrics.request_json_serialize_ms if vlm_metrics else None
+                ),
+                vlm_http_round_trip=(
+                    vlm_metrics.vlm_http_round_trip_ms if vlm_metrics else None
+                ),
+                response_parse=(
+                    vlm_metrics.response_parse_ms if vlm_metrics else None
+                ),
+                deadline_remaining_ms=deadline_remaining_ms,
+                degraded_reason=(
+                    errors[-1].code if postprocessing_failed and errors else None
+                ),
             ),
         )
 

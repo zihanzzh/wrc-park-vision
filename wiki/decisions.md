@@ -232,10 +232,29 @@
 ### D039：Runtime V3 使用单次 Multi-Image Review
 
 - 日期：2026-07-24
-- 决策：每张图片最多调用一次 Qwen / VLM。请求同时包含原始图片、Detection Summary、behavior candidates 和最多 5 个候选驱动重点 crops。
+- 决策：每张图片最多调用一次 Qwen / VLM。请求同时包含原始图片、Detection Summary、behavior candidates 和配置限量的候选驱动重点 crops；当前默认最多 3 个。
 - 说明：重点 crops 只围绕低置信、跨模型冲突、小目标和行为候选生成，并在发送前合并重叠区域；不再使用固定网格或第二次 VLM 请求。
 - 坐标：所有 VLM `new_findings.bbox_normalized_xyxy` 必须相对原始完整图片。`crop_id` 只记录视觉参考，不参与坐标转换。
 - 兼容：detector-only Pipeline、现有 Parser 逐项容错、Fusion verdict 语义、Behavior 类别和输出 schema 主体保持不变。V2 配置仅迁移到 V3 参数，不恢复双请求。
+
+### D040：仅 required observations 需要 VLM decision
+
+- 日期：2026-07-25
+- 决策：Candidate Selector 未选中的 detector observation 直接保留，使用 `review.required=false` 和 Fusion action `keep_detector_result`；只有 required observation 缺项或 Review 失败才标记 `keep_review_failed`。
+- 说明：完整 Detection Summary 继续发送给 VLM，用于全图理解、漏检和行为判断，但不要求为非候选 detection 输出 `yolo_reviews`。
+
+### D041：Competition SDK Response 使用独立 V1 adapter
+
+- 日期：2026-07-25
+- 决策：完整内部 `PipelineResponse` 保持不变；独立 adapter 只映射 Fusion 后有效 objects / behaviors，并输出暂定 `competition_result.json`。
+- 说明：当前字段根据已知的类别、bbox、confidence 和帧上下文要求设计，不声称是官方协议。拿到正式 SDK 文档后通过 adapter 映射字段名、坐标和 transport。
+
+### D042：10 秒 deadline 与性能验收分开判断
+
+- 日期：2026-07-25
+- 决策：Runtime 使用 10 秒总预算限制 VLM 剩余 timeout，并在失败时按策略降级；该机制只负责异常保护。
+- 验收：只有 Thor warm-run 中 VLM 实际完成、结果非 degraded，且至少 5 次 warm runs 的 median total 小于 10 秒，才判定性能达标。VLM 被跳过、timeout 或失败后的快速返回不计为通过。
+- 性能输入：默认最多 3 个重点 crops，面积达到原图 80% 的 crop 不重复发送；VLM 图像默认最长边 640、JPEG quality 85，详细 timing 和 token 使用写入 Review metrics。
 
 ## 被替代的历史方案
 

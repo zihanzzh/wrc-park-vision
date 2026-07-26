@@ -30,7 +30,8 @@ class ConfigError(ValueError):
 
 
 class RuntimeSettings(BaseModel):
-    execution: Literal["sequential"] = "sequential"
+    execution: Literal["sequential", "parallel"] = "sequential"
+    total_timeout_seconds: float = Field(default=10.0, gt=0.0)
     output_dir: Path = Path("runtime_outputs")
 
 
@@ -158,12 +159,13 @@ class ImportantCropSettings(BaseModel):
     context_scale: float = Field(default=2.0, ge=1.0)
     min_crop_size_ratio: float = Field(default=0.18, gt=0.0, le=1.0)
     merge_iou_threshold: float = Field(default=0.20, gt=0.0, le=1.0)
-    max_crops: int = Field(default=5, ge=1, le=8)
+    max_crops: int = Field(default=3, ge=1, le=8)
+    skip_crop_area_ratio: float = Field(default=0.80, gt=0.0, le=1.0)
 
 
 class MultiImageReviewSettings(ReviewPassSettings):
     timeout_seconds: Optional[float] = Field(default=8.0, gt=0.0)
-    max_tokens: Optional[int] = Field(default=1200, gt=0)
+    max_tokens: Optional[int] = Field(default=700, gt=0)
 
 
 class ReviewSettings(BaseModel):
@@ -177,6 +179,7 @@ class ReviewSettings(BaseModel):
     )
     important_crops: ImportantCropSettings = Field(default_factory=ImportantCropSettings)
     multi_image: MultiImageReviewSettings = Field(default_factory=MultiImageReviewSettings)
+    reserve_seconds_for_fusion_and_output: float = Field(default=0.75, ge=0.0)
     uncertain_policy: Literal["keep_flagged", "drop"] = "keep_flagged"
     review_failure_policy: Literal["keep_flagged", "drop_review_required"] = "keep_flagged"
     provider: "ReviewProviderSettings" = Field(default_factory=lambda: ReviewProviderSettings())
@@ -225,9 +228,12 @@ class ReviewProviderSettings(BaseModel):
     endpoint: Optional[str] = None
     model_id: Optional[str] = None
     api_key_env: Optional[str] = None
-    timeout_seconds: float = Field(default=10.0, gt=0.0)
-    max_tokens: int = Field(default=1200, gt=0)
+    timeout_seconds: float = Field(default=8.0, gt=0.0)
+    max_tokens: int = Field(default=700, gt=0)
     temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    image_max_side: int = Field(default=640, gt=0)
+    jpeg_quality: int = Field(default=85, ge=1, le=100)
+    response_format_json_object: bool = False
 
     @model_validator(mode="after")
     def validate_enabled_provider(self) -> "ReviewProviderSettings":
@@ -296,10 +302,21 @@ class PreviewSettings(BaseModel):
             "unknown": "#d97706",
         }
     )
+    status_colors: dict[str, str] = Field(
+        default_factory=lambda: {
+            "corrected": "#a855f7",
+            "uncertain": "#6b7280",
+            "review_failed": "#f97316",
+            "conflict": "#eab308",
+        }
+    )
 
     @model_validator(mode="after")
     def validate_colors(self) -> "PreviewSettings":
-        for task_group, color in self.task_group_colors.items():
+        for task_group, color in {
+            **self.task_group_colors,
+            **self.status_colors,
+        }.items():
             if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
                 raise ValueError(f"invalid preview color for {task_group}: {color}")
         return self

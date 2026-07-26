@@ -8,9 +8,14 @@ from PIL import Image, ImageDraw, ImageFont
 
 from wrc_park_vision.runtime.config import PreviewSettings
 from wrc_park_vision.runtime.fusion import fuse_review_results, merge_and_mark_conflicts
-from wrc_park_vision.runtime.preview import _layout_label, render_preview
+from wrc_park_vision.runtime.preview import (
+    _layout_label,
+    _observation_display_class,
+    render_preview,
+)
 from wrc_park_vision.runtime.schemas import (
     BBoxGeometry,
+    Conflict,
     Observation,
     ObservationReview,
     ObservationSource,
@@ -177,6 +182,88 @@ class PreviewTests(unittest.TestCase):
 
             with Image.open(preview_path) as rendered:
                 self.assertEqual(rendered.size, (200, 120))
+            self.assertEqual(
+                _observation_display_class(corrected, "corrected"),
+                "kick_scooter",
+            )
+
+    def test_preview_uses_distinct_status_colors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = write_test_image(root / "source.png", (240, 120))
+            corrected = make_observation(
+                "prohibited_items",
+                "detector",
+                0,
+                "plastic_drink_bottle",
+                0.8,
+                (10, 20, 50, 80),
+                image_size=(240, 120),
+            )
+            corrected.metadata.update(
+                review_source="vlm_corrected",
+                original_class_name="spray_can",
+            )
+            uncertain = make_observation(
+                "garbage",
+                "garbage",
+                1,
+                "paper",
+                0.5,
+                (70, 20, 110, 80),
+                image_size=(240, 120),
+            )
+            uncertain.review = ObservationReview(
+                required=True,
+                status="pending",
+                reasons=["vlm_uncertain"],
+            )
+            review_failed = make_observation(
+                "garbage",
+                "garbage",
+                2,
+                "box",
+                0.5,
+                (130, 20, 170, 80),
+                image_size=(240, 120),
+            )
+            review_failed.review = ObservationReview(
+                required=True,
+                status="pending",
+                reasons=["review_item_missing_or_failed"],
+            )
+            conflict = make_observation(
+                "garbage",
+                "garbage",
+                3,
+                "bottle",
+                0.5,
+                (190, 20, 230, 80),
+                image_size=(240, 120),
+            )
+            conflict.conflicts.append(Conflict(observation_id="obs-other"))
+            response = make_response(
+                [corrected, uncertain, review_failed, conflict],
+                image_path,
+            )
+            preview_path = root / "preview.jpg"
+
+            render_preview(image_path, response, preview_path, PreviewSettings())
+
+            with Image.open(preview_path) as rendered:
+                preview = rendered.convert("RGB")
+                corrected_color = preview.getpixel((10, 50))
+                uncertain_color = preview.getpixel((70, 50))
+                failed_color = preview.getpixel((130, 50))
+                conflict_color = preview.getpixel((190, 50))
+
+        self.assertGreater(corrected_color[0], corrected_color[1])
+        self.assertGreater(corrected_color[2], corrected_color[1])
+        self.assertLess(max(uncertain_color) - min(uncertain_color), 45)
+        self.assertGreater(failed_color[0], failed_color[1])
+        self.assertGreater(failed_color[1], failed_color[2])
+        self.assertGreater(conflict_color[0], conflict_color[2])
+        self.assertGreater(conflict_color[1], conflict_color[2])
 
     def test_label_layout_stays_inside_right_and_top_edges(self) -> None:
         image = Image.new("RGB", (200, 120), "white")
