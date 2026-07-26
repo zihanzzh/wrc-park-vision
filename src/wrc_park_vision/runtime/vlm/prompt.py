@@ -21,7 +21,7 @@ def _build_output_template(
         "yolo_reviews": [
             {
                 "id": item.observation_id,
-                "verdict": "uncertain",
+                "verdict": "confirmed",
             }
             for item in summary.detections
             if item.observation_id in required_ids
@@ -36,47 +36,71 @@ def _build_object_guide(
     visual_class_guide: dict[str, dict[str, dict[str, object]]],
     relevant_class_names: dict[str, set[str]],
 ) -> dict[str, dict[str, dict[str, object]]]:
-    return {
-        task_group: {
+    guide: dict[str, dict[str, dict[str, object]]] = {}
+    for task_group, class_names in class_catalog.items():
+        relevant = relevant_class_names.get(task_group, set())
+        entries = {
             class_name: visual_class_guide.get(task_group, {}).get(class_name, {})
             for class_name in class_names
-            if class_name in relevant_class_names.get(task_group, set())
+            if class_name in relevant
         }
-        for task_group, class_names in class_catalog.items()
-        if relevant_class_names.get(task_group)
-    }
+        if entries:
+            guide[task_group] = entries
+    return guide
 
 
-def _compact_detection_summary(summary: DetectionSummary) -> dict[str, object]:
-    return {
-        "detections": [
+def _rounded_bbox(values: tuple[float, float, float, float]) -> list[float]:
+    return [round(value, 5) for value in values]
+
+
+def _compact_review_context(
+    summary: DetectionSummary,
+    required_review_observation_ids: tuple[str, ...],
+    candidate_reasons: dict[str, set[str]],
+) -> dict[str, object]:
+    required_ids = set(required_review_observation_ids)
+    detections: list[dict[str, object]] = []
+    for item in summary.detections:
+        if item.observation_id not in required_ids:
+            continue
+        detection: dict[str, object] = {
+            "id": item.observation_id,
+            "task": item.task_group,
+            "class": item.class_name,
+            "conf": round(item.confidence, 4),
+            "box": _rounded_bbox(item.bbox_normalized_xyxy),
+        }
+        if item.conflict_observation_ids:
+            detection["conflicts"] = item.conflict_observation_ids
+        reasons = sorted(
             {
-                "id": item.observation_id,
-                "task_group": item.task_group,
-                "class_name": item.class_name,
-                "confidence": item.confidence,
-                "bbox": item.bbox_normalized_xyxy,
-                "conflicts": item.conflict_observation_ids,
-                "review_reasons": item.review_reasons,
+                *item.review_reasons,
+                *candidate_reasons.get(item.observation_id, set()),
             }
-            for item in summary.detections
-        ],
-        "behavior_classes": [
+        )
+        if reasons:
+            detection["why"] = reasons
+        detections.append(detection)
+
+    context: dict[str, object] = {"detections": detections}
+    if summary.behavior_classes:
+        context["behavior_classes"] = [
             {
-                "class_name": item.class_name,
-                "required_objects": item.required_object_classes,
+                "class": item.class_name,
+                "objects": item.required_object_classes,
             }
             for item in summary.behavior_classes
-        ],
-        "behavior_candidates": [
+        ]
+    if summary.behavior_candidates:
+        context["behavior_candidates"] = [
             {
                 "id": item.id,
-                "class_name": item.class_name,
-                "evidence_ids": item.evidence_observation_ids,
+                "class": item.class_name,
+                "evidence": item.evidence_observation_ids,
             }
             for item in summary.behavior_candidates
-        ],
-    }
+        ]
+    return context
 
 
 def _relevant_visual_classes(
@@ -86,15 +110,24 @@ def _relevant_visual_classes(
 ) -> dict[str, set[str]]:
     required_ids = set(required_review_observation_ids)
     relevant: dict[str, set[str]] = {}
-    required_groups: set[str] = set()
+    detection_by_id = {
+        item.observation_id: item for item in summary.detections
+    }
     for item in summary.detections:
+        if item.observation_id not in required_ids:
+            continue
         relevant.setdefault(item.task_group, set()).add(item.class_name)
-        if item.observation_id in required_ids:
-            required_groups.add(item.task_group)
-    for task_group in required_groups:
-        relevant.setdefault(task_group, set()).update(
-            class_catalog.get(task_group, [])
-        )
+        for conflict_id in item.conflict_observation_ids:
+            conflict = detection_by_id.get(conflict_id)
+            if conflict is not None:
+                relevant.setdefault(conflict.task_group, set()).add(
+                    conflict.class_name
+                )
+    for behavior_class in summary.behavior_classes:
+        for class_name in behavior_class.required_object_classes:
+            for task_group, class_names in class_catalog.items():
+                if class_name in class_names:
+                    relevant.setdefault(task_group, set()).add(class_name)
     return relevant
 
 
@@ -104,7 +137,7 @@ def _build_prompt(
     *,
     visual_class_guide: dict[str, dict[str, dict[str, object]]],
     crop_catalog: list[dict[str, object]],
-    candidate_catalog: list[dict[str, object]],
+    candidate_reasons: dict[str, set[str]],
     required_review_observation_ids: tuple[str, ...],
 ) -> str:
     compact = {"ensure_ascii": False, "separators": (",", ":")}
@@ -117,50 +150,30 @@ def _build_prompt(
             required_review_observation_ids,
         ),
     )
-    task_groups = ", ".join(TASK_GROUPS)
-    behavior_classes = ", ".join(BEHAVIOR_CLASS_NAMES)
-    return f"""任务
-同时检查原始完整图片和少量重点裁剪图，一次完成：审核检测、发现漏检对象、确认不文明行为。
+    output_template = _build_output_template(
+        summary,
+        required_review_observation_ids,
+    )
+    review_context = _compact_review_context(
+        summary,
+        required_review_observation_ids,
+        candidate_reasons,
+    )
+    return f"""一次完成检测审核、漏检扫描和行为判断。original_image 是坐标唯一基准；crop 只用于看细节。
+合法 task：{json.dumps(TASK_GROUPS, **compact)}
+合法 object：{json.dumps(class_catalog, **compact)}
+合法 behavior：{json.dumps(BEHAVIOR_CLASS_NAMES, **compact)}
+视觉指南：{json.dumps(object_guide, **compact)}
+审核输入：{json.dumps(review_context, **compact)}
+crop 映射：{json.dumps(crop_catalog, **compact)}
 
-图片
-- image_id=original_image 是坐标唯一基准。
-- 其余图片是原图重点区域，只用于看清细节；crop 元数据给出它在原图的位置。
-
-合法值
-- task_group：{task_groups}
-- behavior class_name：{behavior_classes}
-- object class catalog：{json.dumps(class_catalog, **compact)}
-
-视觉类别指南
-{json.dumps(object_guide, **compact)}
-
-规则
-1. required_review_observation_ids 中每个 id 必须在 yolo_reviews 中恰好出现一次。未列入该数组的 detection 不需要输出 decision，系统默认保留。
-2. yolo_reviews 使用短字段 id 和 verdict。仅 corrected 增加 task_group 和 class_name；其他 verdict 不输出这两个字段。
-3. new_findings 只能使用 object class catalog 中的类别。每项必须包含 task_group、class_name、confidence、bbox_normalized_xyxy、review_pass="multi_image"、geometry_source="vlm_multi_image"。crop_id 可为帮助判断该目标的 crop ID，否则为 null。
-4. 所有 new_findings 的 bbox_normalized_xyxy 都必须是相对 original_image 的 [x1,y1,x2,y2]，绝不能使用 crop 内坐标。
-5. behavior candidate 只是上下文；只有确认发生的行为才写入 behavior_reviews。无候选时仍扫描四类行为，没有行为必须返回空数组。
-6. uncertain 只用于图像确实无法判断，不能作为批量默认答案；证据足够时必须作出 confirmed、corrected 或 rejected。
-7. cross-model conflict 可能是同一物体的类别冲突，必须按可见结构分别判断。明确为透明塑料饮料瓶时 confirmed plastic_drink_bottle、rejected spray_can；明确为香烟盒时 confirmed empty_cigarette_box、rejected spray_can。
-8. 普通塑料饮料瓶、香烟盒和纸团都不是 spray_can。证据不足时仍返回 uncertain，不得猜测。
-9. 正常坐在长椅上不是 standing_or_lying_on_bench。没有行为必须返回空数组。
-10. reasoning 默认省略；只有必要时才用一个极短句。不要展示分析过程。
-
-输出
-只输出一个 JSON object，不要 Markdown、代码围栏或解释。保留三个顶层数组：
-{json.dumps(_build_output_template(summary, required_review_observation_ids), **compact)}
-
-Detection Summary
-{json.dumps(_compact_detection_summary(summary), **compact)}
-
-required_review_observation_ids
-{json.dumps(required_review_observation_ids, **compact)}
-
-重点审核候选
-{json.dumps(candidate_catalog, **compact)}
-
-Crop 元数据
-{json.dumps(crop_catalog, **compact)}
+规则：
+1. 审核输入中每个 detection id 在 yolo_reviews 恰好出现一次。verdict 只能是 confirmed/rejected/corrected/uncertain；仅 corrected 增加 task_group、class_name。
+2. 按可见结构判断。uncertain 只用于确实看不清；普通塑料瓶、香烟盒、纸团不是 spray_can。冲突项分别判断。
+3. new_findings 只报允许类别中的明确漏检，字段仅 task_group、class_name、confidence、bbox_normalized_xyxy，可选 crop_id。bbox 必须是 original_image 的 [x1,y1,x2,y2]。
+4. behavior candidate 不是结论。behavior_reviews 仅包含四类行为；候选项字段仅 candidate_id、class_name、verdict、可选 confidence。无候选也扫描全图；无行为返回 []。正常坐长椅不违规。
+5. 只输出一个 JSON object，必须含 yolo_reviews、new_findings、behavior_reviews。禁止 Markdown、解释、reasoning、null 和多余字段。
+最小输出模板：{json.dumps(output_template, **compact)}
 """
 
 
@@ -171,32 +184,29 @@ def build_multi_image_prompt(
     *,
     required_review_observation_ids: tuple[str, ...] | None = None,
 ) -> str:
-    crop_catalog = [
-        {
-            "crop_id": crop.crop_id,
-            "original_image_bbox_normalized_xyxy": crop.bbox_normalized_xyxy,
-            "reasons": list(crop.reasons),
-            "observation_ids": list(crop.observation_ids),
-            "behavior_candidate_ids": list(crop.behavior_candidate_ids),
+    crop_catalog: list[dict[str, object]] = []
+    for crop in request.crops:
+        item: dict[str, object] = {
+            "id": crop.crop_id,
+            "box": _rounded_bbox(crop.bbox_normalized_xyxy),
         }
-        for crop in request.crops
-    ]
-    candidate_catalog = [
-        {
-            "candidate_id": candidate.candidate_id,
-            "original_image_bbox_normalized_xyxy": candidate.bbox_normalized_xyxy,
-            "reasons": list(candidate.reasons),
-            "observation_ids": list(candidate.observation_ids),
-            "behavior_candidate_ids": list(candidate.behavior_candidate_ids),
-        }
-        for candidate in request.candidates
-    ]
+        if crop.observation_ids:
+            item["observations"] = list(crop.observation_ids)
+        if crop.behavior_candidate_ids:
+            item["behaviors"] = list(crop.behavior_candidate_ids)
+        crop_catalog.append(item)
+    candidate_reasons: dict[str, set[str]] = {}
+    for candidate in request.candidates:
+        for observation_id in candidate.observation_ids:
+            candidate_reasons.setdefault(observation_id, set()).update(
+                candidate.reasons
+            )
     return _build_prompt(
         request.summary,
         class_catalog,
         visual_class_guide=visual_class_guide or {},
         crop_catalog=crop_catalog,
-        candidate_catalog=candidate_catalog,
+        candidate_reasons=candidate_reasons,
         required_review_observation_ids=(
             request.required_review_observation_ids
             if required_review_observation_ids is None
@@ -216,7 +226,7 @@ def build_full_image_prompt(
         class_catalog,
         visual_class_guide=visual_class_guide or {},
         crop_catalog=[],
-        candidate_catalog=[],
+        candidate_reasons={},
         required_review_observation_ids=tuple(
             item.observation_id for item in summary.detections
         ),

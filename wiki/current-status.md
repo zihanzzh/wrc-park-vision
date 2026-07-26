@@ -6,6 +6,19 @@
 
 本轮已完成代码实现与 mock 自动测试，没有运行真实 Qwen2.5-VL、训练模型、修改数据集、安装依赖或 push。
 
+## Runtime V3 Thor Review 性能优化
+
+- Thor 最新真实链路已确认 detection、单次 multi-image Review、vLLM 通信和 JSON Parser 均可运行，不再存在 HTTP timeout。
+- 当前实测约为：Runtime total 17.9 秒、单独模型初始化 6.6 秒、detection 1.3 秒、Review / HTTP round trip 16.4 秒。
+- 当前请求为 4 张图片、8 个 required reviews；endpoint 报告 prompt 5106 tokens、completion 700 tokens、`finish_reason=length`。主要失败变为输出达到上限后 JSON 被截断。
+- 本轮只优化 `vlm/prompt.py` 和对应测试，不修改 Pipeline、Fusion、Parser、schema 或 Runtime interface。
+- Prompt 中 detections 已严格过滤为 required IDs；非 required detection 由 Runtime 自动保留，不再发送给 VLM。
+- 视觉指南只保留必审类别、其冲突类别和四类行为判断所需基础对象；完整允许类别名称仍以紧凑目录保留，确保 VLM 可以报告漏检。
+- candidate reasons 合并进必审 detection，独立 candidate catalog 已移除；crop metadata 只保留 crop ID、原图 bbox 和关联 ID。
+- findings 不再被要求输出可由 Parser 确定的 `review_pass` / `geometry_source`；所有输出禁止 reasoning、null 和多余字段。
+- 代表性 8 必审项、3 crops、16 detections 输入中，Prompt 从 9,029 字符降至 4,281 字符，减少 52.6%。真实 token 与延迟必须在 Thor 复测，因为 endpoint 的 prompt tokens 还包含视觉 token。
+- `response_format={"type":"json_object"}` 的配置与请求实现已有测试覆盖，但仓库无法确认 Thor 当前 vLLM 版本支持，因此未擅自启用。
+
 ## Runtime V3 收尾
 
 - 未被 Candidate Selector 选中的 detection 现在保持 `review.required=false`，Fusion 使用 `keep_detector_result`，不再误标为 missing / review failed。
@@ -119,7 +132,7 @@
 
 ## 验证状态
 
-- 自动测试：126 项 Runtime `unittest` 通过。
+- 自动测试：127 项 Runtime `unittest` 通过。
 - Python `compileall`：通过。
 - `git diff --check`：通过。
 - 本轮使用 mock HTTP，确认原图与全部重点 crops 只通过一次请求发送；本轮没有访问真实服务。

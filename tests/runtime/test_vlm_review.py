@@ -130,37 +130,57 @@ def make_two_detection_summary() -> DetectionSummary:
 
 
 def prompt_output_template(prompt: str) -> dict[str, object]:
-    template = prompt.split("保留三个顶层数组：\n", 1)[1].split(
-        "\n\nDetection Summary",
-        1,
-    )[0]
+    template = prompt.split("最小输出模板：", 1)[1].splitlines()[0]
     return json.loads(template)
 
 
 class VLMReviewTests(unittest.TestCase):
     def test_prompt_uses_real_enums_without_json_placeholders(self) -> None:
         prompt = build_review_prompt(make_summary(), CATALOG)
-        self.assertIn("原始完整图片", prompt)
-        self.assertIn("prohibited_items, garbage, uncivilized_behavior", prompt)
-        self.assertIn("trampling_grass, smoking, blocking_fire_lane, standing_or_lying_on_bench", prompt)
+        self.assertIn("original_image 是坐标唯一基准", prompt)
+        self.assertIn('"prohibited_items","garbage","uncivilized_behavior"', prompt)
+        self.assertIn('"trampling_grass","smoking","blocking_fire_lane"', prompt)
         self.assertIn('"id":"obs-0001"', prompt)
-        self.assertIn('"verdict":"uncertain"', prompt)
+        self.assertIn('"verdict":"confirmed"', prompt)
         self.assertIn('"speaker"', prompt)
-        self.assertIn("behavior_candidates", prompt)
         self.assertNotIn("允许的 task_group", prompt)
         self.assertNotIn("允许的 class_name", prompt)
         self.assertNotIn("合法类别", prompt)
         self.assertNotIn("类别名称", prompt)
         self.assertNotIn("填写", prompt)
         self.assertIn("只输出一个 JSON object", prompt)
-        self.assertIn("uncertain 只用于图像确实无法判断", prompt)
-        self.assertIn("confirmed plastic_drink_bottle", prompt)
-        self.assertIn("rejected spray_can", prompt)
+        self.assertIn("uncertain 只用于确实看不清", prompt)
+        self.assertIn("普通塑料瓶、香烟盒、纸团不是 spray_can", prompt)
         self.assertNotIn('"reasoning":null', prompt)
+        self.assertNotIn("review_pass=", prompt)
+        self.assertNotIn("geometry_source=", prompt)
 
     def test_prompt_uses_compact_visual_guide_for_enabled_classes(self) -> None:
+        summary = DetectionSummary(
+            total_detections=4,
+            detections=[
+                DetectionSummaryItem(
+                    observation_id=f"obs-{index:04d}",
+                    task_group="prohibited_items",
+                    class_id=index - 1,
+                    class_name=class_name,
+                    confidence=0.5,
+                    bbox_xyxy=(10, 10, 30, 30),
+                    bbox_normalized_xyxy=(0.1, 0.1, 0.3, 0.3),
+                )
+                for index, class_name in enumerate(
+                    (
+                        "portable_gas_stove",
+                        "skateboard",
+                        "kick_scooter",
+                        "barbecue_grill",
+                    ),
+                    1,
+                )
+            ],
+        )
         prompt = build_review_prompt(
-            make_summary(),
+            summary,
             VISUAL_TEST_CATALOG,
             visual_class_guide=VISUAL_TEST_GUIDE,
         )
@@ -175,6 +195,72 @@ class VLMReviewTests(unittest.TestCase):
         self.assertNotIn("roller_skates", prompt)
         self.assertNotIn("允许的 task_group", prompt)
         self.assertNotIn("允许的 class_name", prompt)
+
+    def test_visual_guide_only_includes_review_conflict_and_behavior_classes(
+        self,
+    ) -> None:
+        summary = DetectionSummary(
+            total_detections=3,
+            detections=[
+                DetectionSummaryItem(
+                    observation_id="obs-0001",
+                    task_group="prohibited_items",
+                    class_id=1,
+                    class_name="skateboard",
+                    confidence=0.3,
+                    bbox_xyxy=(10, 10, 30, 30),
+                    bbox_normalized_xyxy=(0.1, 0.1, 0.3, 0.3),
+                    conflict_observation_ids=["obs-0002"],
+                ),
+                DetectionSummaryItem(
+                    observation_id="obs-0002",
+                    task_group="prohibited_items",
+                    class_id=2,
+                    class_name="kick_scooter",
+                    confidence=0.4,
+                    bbox_xyxy=(10, 10, 30, 30),
+                    bbox_normalized_xyxy=(0.1, 0.1, 0.3, 0.3),
+                ),
+                DetectionSummaryItem(
+                    observation_id="obs-0003",
+                    task_group="prohibited_items",
+                    class_id=0,
+                    class_name="portable_gas_stove",
+                    confidence=0.9,
+                    bbox_xyxy=(40, 10, 60, 30),
+                    bbox_normalized_xyxy=(0.4, 0.1, 0.6, 0.3),
+                ),
+            ],
+        )
+        candidate = ReviewCandidate(
+            candidate_id="review-candidate-0001",
+            bbox_normalized_xyxy=(0.1, 0.1, 0.3, 0.3),
+            reasons=("cross_model_conflict",),
+            observation_ids=("obs-0001",),
+        )
+        prompt = build_multi_image_prompt(
+            MultiImageReviewRequest(
+                image=ValidatedImage(
+                    "image.jpg",
+                    Image.new("RGB", (100, 80), "white"),
+                    100,
+                    80,
+                ),
+                summary=summary,
+                candidates=(candidate,),
+            ),
+            VISUAL_TEST_CATALOG,
+            VISUAL_TEST_GUIDE,
+        )
+        visual_section = prompt.split("视觉指南：", 1)[1].split(
+            "\n审核输入：",
+            1,
+        )[0]
+
+        self.assertIn("平板式板面下方有轮子", visual_section)
+        self.assertIn("站立踏板连接直立转向杆", visual_section)
+        self.assertNotIn("燃烧器、锅架或气罐舱", visual_section)
+        self.assertNotIn("开放式烧烤炉体", visual_section)
 
     def test_multi_image_prompt_only_templates_candidate_observations(self) -> None:
         summary = make_two_detection_summary()
@@ -204,9 +290,9 @@ class VLMReviewTests(unittest.TestCase):
             [item["id"] for item in template["yolo_reviews"]],
             ["obs-0001"],
         )
-        self.assertIn('"id":"obs-0002"', prompt)
+        self.assertNotIn('"id":"obs-0002"', prompt)
         self.assertIn(
-            "未列入该数组的 detection 不需要输出 decision，系统默认保留",
+            "每个 detection id 在 yolo_reviews 恰好出现一次",
             prompt,
         )
 
@@ -697,6 +783,7 @@ class VLMReviewTests(unittest.TestCase):
             endpoint="http://localhost:8000/v1/chat/completions",
             model_id="Qwen2.5-VL",
             image_max_side=64,
+            response_format_json_object=True,
         )
         provider = Qwen25VLProvider(
             settings,
@@ -764,6 +851,10 @@ class VLMReviewTests(unittest.TestCase):
         self.assertIn("带喷嘴或喷头的加压气雾罐", content[0]["text"])
         self.assertEqual(captured["calls"], 1)
         self.assertEqual(captured["timeout"], 8.0)
+        self.assertEqual(
+            captured["body"]["response_format"],
+            {"type": "json_object"},
+        )
         self.assertEqual(result.review_pass, "multi_image")
         self.assertEqual(result.decisions[0].verdict, "confirmed")
         self.assertEqual(result.metrics.finish_reason, "stop")

@@ -2,6 +2,25 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-07-25 Runtime V3 Review Prompt 性能优化
+
+根据 Thor 真实指标（Review / HTTP 约 16.4 秒、prompt 5106 tokens、completion 700 tokens、`finish_reason=length`），本轮严格限制在 Prompt 与请求 contract 优化：
+
+- Detection Summary 只发送 `required_review_observation_ids` 对应的 detection，非 required detection 不再进入 Prompt。
+- 视觉指南从“必审 task group 全部类别”缩为必审类别、冲突类别和行为所需基础对象。
+- 删除独立 candidate catalog；candidate reasons 合并到必审 detection。crop catalog 去掉重复 reasons 和长字段名。
+- 检测 bbox/confidence 只在 Prompt 上做安全精度压缩，不修改内部 geometry。
+- findings 输出省略 Parser 可确定的 `review_pass` / `geometry_source`；yolo review 与 behavior review 使用最小字段，禁止 reasoning、null 和额外说明。
+- 代表性基线从 9,029 字符降至 4,281 字符（-52.6%），8 个 required reviews 和 3 crops 保持不变。
+- 增加测试确认非 required detection 不进入 Prompt、视觉指南不包含无关类别，以及配置开启时请求携带 `response_format={"type":"json_object"}`。
+- Thor vLLM 的 structured JSON 支持状态仍未确认，因此没有修改 gitignored local 配置或默认启用该选项。
+
+验证结果：
+
+- 全部 Runtime `unittest` 127 项通过。
+- `compileall` 与 `git diff --check` 通过。
+- 本次没有运行真实模型、安装依赖、修改 Pipeline/Fusion/Parser/schema、commit 或 push；优化后的 token、completion 和延迟等待 Thor 复测。
+
 ## 2026-07-25 Runtime V3 收尾、Competition SDK 与性能测量
 
 本次受控收尾没有修改模型、权重、数据集、训练代码或 Thor 私有路径：
