@@ -114,6 +114,40 @@ class FusionTests(unittest.TestCase):
         self.assertEqual(fusion.decisions[1].vlm_confidence, 0.88)
         self.assertEqual(fusion.decisions[2].geometry_source, "none")
 
+    def test_spray_can_false_positive_rejected_by_vlm_is_not_final(self) -> None:
+        observations = merge_and_mark_conflicts(
+            [
+                make_observation(
+                    "prohibited_items",
+                    "yolo_world",
+                    0,
+                    "spray_can",
+                    0.60,
+                    (10, 10, 50, 70),
+                )
+            ],
+            0.75,
+        )
+        review = ReviewSummary(
+            attempted=True,
+            status="completed",
+            decisions=[
+                VLMReviewDecision(
+                    observation_id="obs-0001",
+                    verdict="rejected",
+                    confidence=0.94,
+                    reasoning="the object is a plastic bottle, not a spray can",
+                )
+            ],
+        )
+
+        finalized, fusion = fuse_review_results(observations, review)
+
+        self.assertEqual(finalized, [])
+        self.assertEqual(fusion.decisions[0].action, "reject_yolo")
+        self.assertEqual(fusion.decisions[0].original_class_name, "spray_can")
+        self.assertEqual(fusion.decisions[0].vlm_confidence, 0.94)
+
     def test_uncertain_is_kept_and_flagged_by_default(self) -> None:
         observations = merge_and_mark_conflicts(
             [make_observation("garbage", "garbage", 0, "paper", 0.4, (10, 10, 30, 30))],

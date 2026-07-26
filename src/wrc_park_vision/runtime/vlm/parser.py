@@ -93,6 +93,7 @@ class _RawBehaviorDecision(BaseModel):
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     evidence_observation_ids: list[str] = Field(default_factory=list)
     reasoning: Optional[str] = None
+    bbox_normalized_xyxy: Optional[tuple[float, float, float, float]] = None
 
     @field_validator("candidate_id", "class_name", mode="before")
     @classmethod
@@ -547,12 +548,9 @@ def parse_review_response(
                     )
                 )
                 continue
-            confirmed_classes.add(item.class_name)
-        if item.candidate_id is not None:
-            reviewed_candidate_ids.add(item.candidate_id)
 
-        behaviors.append(
-            VLMBehaviorDecision(
+        try:
+            decision = VLMBehaviorDecision(
                 id=f"behavior-review-{len(behaviors) + 1:04d}",
                 candidate_id=item.candidate_id,
                 class_id=behavior_class.class_id,
@@ -561,8 +559,25 @@ def parse_review_response(
                 confidence=item.confidence,
                 evidence_observation_ids=evidence_ids,
                 reasoning=item.reasoning,
+                bbox_normalized_xyxy=item.bbox_normalized_xyxy,
             )
-        )
+        except ValidationError as exc:
+            issues.append(
+                _item_issue(
+                    "behavior_reviews",
+                    index,
+                    "invalid_item",
+                    str(exc),
+                    candidate_id=item.candidate_id,
+                    review_pass=review_pass,
+                )
+            )
+            continue
+        if item.verdict == "confirmed":
+            confirmed_classes.add(item.class_name)
+        if item.candidate_id is not None:
+            reviewed_candidate_ids.add(item.candidate_id)
+        behaviors.append(decision)
     return ParsedReviewResponse(
         decisions=decisions,
         findings=findings,

@@ -2,6 +2,21 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-07-25 Behavior 主动扫描与 VLM Review 加固
+
+- 保留四类正式行为和原有 object-based candidates；behavior enabled 时，无 candidate 也继续通过同一次 Multi-Image VLM 请求主动扫描四类行为。
+- 为行为配置增加可选 `decision_rules` 与向后兼容的 `require_bbox`；example 和 YOLO-World local 配置要求 confirmed behavior bbox。
+- YOLO-World 行为辅助 prompts 扩展为用户确认的 person、grass、smoking、fire lane 和 bench 相关 concepts，canonical object class 仍保持五类。
+- Prompt 明确 VLM 是最终语义判断者，可 reject/correct 必审 detector，并在没有 object proposal 时新增 confirmed behavior。
+- Parser 逐项接收行为 normalized bbox，异常 bbox 不影响合法兄弟条目；Pipeline 将合法框映射到原图，并对缺失/非法必需框返回结构化 issue 和 `partial_success`。
+- 带框 behavior 进入 Runtime JSON 和 Preview；Competition Response V1 字段保持不变。Fusion 不再把 behavior bbox 与其 object evidence 误标为 object class conflict。
+- 增加主动 smoking、主动 trampling、正常场景空结果、行为 bbox/Preview、Competition schema 和 `spray_can` false positive rejection 回归测试。
+
+验证结果：
+
+- 全部 Runtime `unittest` 135 项通过。
+- 本次没有调用真实 YOLO/Qwen、安装依赖、训练模型、修改数据集、commit 或 push。
+
 ## 2026-07-25 Runtime V3 Review Prompt 性能优化
 
 根据 Thor 真实指标（Review / HTTP 约 16.4 秒、prompt 5106 tokens、completion 700 tokens、`finish_reason=length`），本轮严格限制在 Prompt 与请求 contract 优化：

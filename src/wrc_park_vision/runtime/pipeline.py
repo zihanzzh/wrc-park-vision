@@ -175,6 +175,7 @@ def _map_finding_geometries(
     image: ValidatedImage,
     *,
     require_bbox: bool = False,
+    require_behavior_bbox: bool = False,
 ) -> VLMReviewResult:
     mapped = []
     issues = list(result.issues)
@@ -219,7 +220,58 @@ def _map_finding_geometries(
             )
             continue
         mapped.append(finding.model_copy(update={"geometry": geometry}))
-    return result.model_copy(update={"findings": mapped, "issues": issues})
+    mapped_behaviors = []
+    for index, behavior in enumerate(result.behaviors):
+        if behavior.verdict != "confirmed":
+            mapped_behaviors.append(behavior)
+            continue
+        if behavior.bbox_normalized_xyxy is None:
+            if require_behavior_bbox:
+                issues.append(
+                    ReviewIssue(
+                        section="behavior_reviews",
+                        item_index=index,
+                        code="missing_behavior_geometry",
+                        message="confirmed behavior requires bbox_normalized_xyxy",
+                        candidate_id=behavior.candidate_id,
+                        review_pass=result.review_pass,
+                    )
+                )
+                continue
+            mapped_behaviors.append(behavior)
+            continue
+        try:
+            x1, y1, x2, y2 = behavior.bbox_normalized_xyxy
+            geometry = BBoxGeometry.from_xyxy(
+                (
+                    x1 * image.width,
+                    y1 * image.height,
+                    x2 * image.width,
+                    y2 * image.height,
+                ),
+                image.width,
+                image.height,
+            )
+        except Exception as exc:
+            issues.append(
+                ReviewIssue(
+                    section="behavior_reviews",
+                    item_index=index,
+                    code="invalid_behavior_geometry",
+                    message=str(exc) or exc.__class__.__name__,
+                    candidate_id=behavior.candidate_id,
+                    review_pass=result.review_pass,
+                )
+            )
+            continue
+        mapped_behaviors.append(behavior.model_copy(update={"geometry": geometry}))
+    return result.model_copy(
+        update={
+            "findings": mapped,
+            "behaviors": mapped_behaviors,
+            "issues": issues,
+        }
+    )
 
 
 class RuntimePipeline:
@@ -493,6 +545,7 @@ class RuntimePipeline:
                         result,
                         image,
                         require_bbox=self.config.review.require_finding_bbox,
+                        require_behavior_bbox=self.config.behavior.require_bbox,
                     )
                     reviewed, review_summary = self.review.apply_result(
                         reviewed,
@@ -513,6 +566,28 @@ class RuntimePipeline:
                                 message=(
                                     f"{len(missing_required_reviews)} required "
                                     "review item(s) were missing"
+                                ),
+                            )
+                        )
+                        postprocessing_failed = True
+                    behavior_geometry_issues = [
+                        issue
+                        for issue in result.issues
+                        if issue.section == "behavior_reviews"
+                        and issue.code
+                        in {
+                            "missing_behavior_geometry",
+                            "invalid_behavior_geometry",
+                        }
+                    ]
+                    if behavior_geometry_issues:
+                        errors.append(
+                            RuntimeErrorInfo(
+                                stage="behavior",
+                                code="behavior_geometry_invalid",
+                                message=(
+                                    f"{len(behavior_geometry_issues)} confirmed "
+                                    "behavior item(s) lacked valid geometry"
                                 ),
                             )
                         )

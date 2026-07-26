@@ -6,6 +6,17 @@
 
 本轮已完成代码实现与 mock 自动测试，没有运行真实 Qwen2.5-VL、训练模型、修改数据集、安装依赖或 push。
 
+## Behavior 主动全图扫描与定位
+
+- 四类正式行为保持不变：`trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。
+- object-based candidate 继续保留，但 behavior enabled 时，同一次 Multi-Image VLM 请求会对每张图片主动扫描四类行为；不再要求 YOLO-World 必须先检出 `grass` 或 `cigarette`。
+- YOLO-World 行为辅助词汇已扩展到 person / people / human / pedestrian、grass / lawn / turf / green area、cigarette / smoker / smoking / cigarette smoke、vehicle / car / truck / bus / parking、bench / park bench / seat。它们只生成 object proposals，不直接判定行为。
+- Behavior 配置新增可选 `decision_rules` 和向后兼容的 `require_bbox`。当前 example 与 YOLO-World local 配置要求 confirmed behavior 返回原图 normalized bbox。
+- VLM Prompt 明确 detector 只是建议；对必审 detection 可执行 `rejected` / `corrected`，并可在没有 candidate 时直接新增 confirmed behavior。
+- confirmed behavior bbox 经校验、裁剪和原图映射后进入 Runtime observation 与 Preview；Competition Response V1 的 behavior 字段结构保持不变。
+- `spray_can` false positive 已增加回归测试：VLM 明确 rejected 后，错误 `spray_can` 不进入最终 observations。
+- 自动测试：135 项 Runtime `unittest` 通过；尚未用真实吸烟、踩踏草坪和正常公园图片验证 Qwen 语义准确率。
+
 ## Runtime V3 Thor Review 性能优化
 
 - Thor 最新真实链路已确认 detection、单次 multi-image Review、vLLM 通信和 JSON Parser 均可运行，不再存在 HTTP timeout。

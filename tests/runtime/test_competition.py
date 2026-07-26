@@ -113,6 +113,7 @@ class CompetitionResponseTests(unittest.TestCase):
                 backend="fake_vlm",
                 model_id="fake-vl",
             ),
+            geometry=BBoxGeometry.from_xyxy((20, 10, 60, 70), 100, 80),
             evidence_observation_ids=["obs-0001"],
         )
         with tempfile.TemporaryDirectory() as directory:
@@ -130,6 +131,15 @@ class CompetitionResponseTests(unittest.TestCase):
         self.assertEqual(sdk.objects[0].review_status, "not_required")
         self.assertEqual(sdk.objects[0].source, "detector")
         self.assertEqual(sdk.behaviors[0].evidence_object_ids, ["obs-0001"])
+        self.assertEqual(
+            set(sdk.behaviors[0].model_dump()),
+            {
+                "class_id",
+                "class_name",
+                "confidence",
+                "evidence_object_ids",
+            },
+        )
 
     def test_review_statuses_and_confidence_rules_are_explicit(self) -> None:
         confirmed = make_observation(

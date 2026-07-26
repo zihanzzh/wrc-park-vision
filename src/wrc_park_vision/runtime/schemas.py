@@ -185,6 +185,7 @@ class BehaviorClassSummary(BaseModel):
     class_id: int = Field(ge=0)
     class_name: str
     required_object_classes: list[str] = Field(default_factory=list)
+    decision_rules: list[str] = Field(default_factory=list)
 
 
 class BehaviorCandidate(BaseModel):
@@ -278,6 +279,24 @@ class VLMBehaviorDecision(BaseModel):
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     evidence_observation_ids: list[str] = Field(default_factory=list)
     reasoning: Optional[str] = None
+    bbox_normalized_xyxy: Optional[Float4] = None
+    geometry: Optional[BBoxGeometry] = None
+
+    @model_validator(mode="after")
+    def validate_behavior_geometry(self) -> "VLMBehaviorDecision":
+        if self.bbox_normalized_xyxy is None:
+            return self
+        values = tuple(float(value) for value in self.bbox_normalized_xyxy)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("behavior bbox coordinates must be finite")
+        clipped = tuple(min(max(value, 0.0), 1.0) for value in values)
+        x1, y1, x2, y2 = clipped
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError(
+                "behavior bbox must have positive width and height after clipping"
+            )
+        self.bbox_normalized_xyxy = clipped
+        return self
 
 
 class ReviewIssue(BaseModel):

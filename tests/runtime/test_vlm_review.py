@@ -150,7 +150,10 @@ class VLMReviewTests(unittest.TestCase):
         self.assertNotIn("填写", prompt)
         self.assertIn("只输出一个 JSON object", prompt)
         self.assertIn("uncertain 只用于确实看不清", prompt)
-        self.assertIn("普通塑料瓶、香烟盒、纸团不是 spray_can", prompt)
+        self.assertIn("普通塑料瓶不是 spray_can", prompt)
+        self.assertIn("final visual reasoning judge", prompt)
+        self.assertIn("reject or correct", prompt)
+        self.assertIn("无论有无 candidate，都主动检查四类行为", prompt)
         self.assertNotIn('"reasoning":null', prompt)
         self.assertNotIn("review_pass=", prompt)
         self.assertNotIn("geometry_source=", prompt)
@@ -335,6 +338,9 @@ class VLMReviewTests(unittest.TestCase):
                         class_id=2,
                         class_name="blocking_fire_lane",
                         required_object_classes=["vehicle"],
+                        decision_rules=[
+                            "vehicle must occupy a marked fire lane",
+                        ],
                     )
                 ]
             }
@@ -349,10 +355,13 @@ class VLMReviewTests(unittest.TestCase):
             summary=summary,
         )
 
-        template = prompt_output_template(build_multi_image_prompt(request, CATALOG))
+        prompt = build_multi_image_prompt(request, CATALOG)
+        template = prompt_output_template(prompt)
 
         self.assertEqual(request.required_review_observation_ids, ())
         self.assertEqual(template["yolo_reviews"], [])
+        self.assertIn("vehicle must occupy a marked fire lane", prompt)
+        self.assertIn("bbox_normalized_xyxy", prompt)
 
     def test_empty_required_reviews_still_parse_findings_and_behaviors(self) -> None:
         summary = make_summary().model_copy(
@@ -617,11 +626,17 @@ class VLMReviewTests(unittest.TestCase):
                         class_id=0,
                         class_name="trampling_grass",
                         required_object_classes=["person", "grass"],
+                        decision_rules=[
+                            "person feet must actually be on the grass",
+                        ],
                     ),
                     BehaviorClassSummary(
                         class_id=2,
                         class_name="blocking_fire_lane",
                         required_object_classes=["vehicle"],
+                        decision_rules=[
+                            "vehicle must occupy a marked fire lane",
+                        ],
                     ),
                 ],
                 "behavior_candidates": [
@@ -652,6 +667,7 @@ class VLMReviewTests(unittest.TestCase):
                         "verdict": "confirmed",
                         "confidence": 0.82,
                         "reasoning": "vehicle blocks the marked fire lane",
+                        "bbox_normalized_xyxy": [-0.1, 0.2, 1.2, 0.9],
                     },
                 ],
             }
@@ -663,6 +679,62 @@ class VLMReviewTests(unittest.TestCase):
         self.assertEqual(parsed.behaviors[0].evidence_observation_ids, ["obs-0001"])
         self.assertIsNone(parsed.behaviors[1].candidate_id)
         self.assertEqual(parsed.behaviors[1].class_id, 2)
+        self.assertEqual(
+            parsed.behaviors[1].bbox_normalized_xyxy,
+            (0.0, 0.2, 1.0, 0.9),
+        )
+
+    def test_invalid_behavior_bbox_does_not_drop_valid_behavior(self) -> None:
+        summary = make_summary().model_copy(
+            update={
+                "behavior_classes": [
+                    BehaviorClassSummary(
+                        class_id=0,
+                        class_name="trampling_grass",
+                    ),
+                    BehaviorClassSummary(
+                        class_id=1,
+                        class_name="smoking",
+                    ),
+                ]
+            }
+        )
+        parsed = parse_review_response(
+            json.dumps(
+                {
+                    "yolo_reviews": [
+                        {
+                            "observation_id": "obs-0001",
+                            "verdict": "confirmed",
+                        }
+                    ],
+                    "new_findings": [],
+                    "behavior_reviews": [
+                        {
+                            "class_name": "trampling_grass",
+                            "verdict": "confirmed",
+                            "confidence": 0.8,
+                            "bbox_normalized_xyxy": [0.8, 0.2, 0.2, 0.9],
+                        },
+                        {
+                            "class_name": "smoking",
+                            "verdict": "confirmed",
+                            "confidence": 0.9,
+                            "bbox_normalized_xyxy": [0.1, 0.1, 0.4, 0.8],
+                        },
+                    ],
+                }
+            ),
+            summary,
+            CATALOG,
+        )
+
+        self.assertEqual(
+            [item.class_name for item in parsed.behaviors],
+            ["smoking"],
+        )
+        self.assertEqual(parsed.issues[0].section, "behavior_reviews")
+        self.assertEqual(parsed.issues[0].code, "invalid_item")
 
     def test_parser_skips_localization_and_reports_incomplete_coverage(self) -> None:
         localized = parse_review_response(

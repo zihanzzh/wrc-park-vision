@@ -257,6 +257,7 @@ class BehaviorClassSettings(BaseModel):
         "standing_or_lying_on_bench",
     ]
     required_object_classes: list[str] = Field(min_length=1)
+    decision_rules: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_required_objects(self) -> "BehaviorClassSettings":
@@ -264,6 +265,10 @@ class BehaviorClassSettings(BaseModel):
             raise ValueError(f"behavior class {self.class_name} contains a blank required object")
         if len(self.required_object_classes) != len(set(self.required_object_classes)):
             raise ValueError(f"behavior class {self.class_name} contains duplicate required objects")
+        if any(not rule.strip() for rule in self.decision_rules):
+            raise ValueError(f"behavior class {self.class_name} contains a blank decision rule")
+        if len(self.decision_rules) != len(set(self.decision_rules)):
+            raise ValueError(f"behavior class {self.class_name} contains duplicate decision rules")
         return self
 
 
@@ -272,6 +277,7 @@ class BehaviorSettings(BaseModel):
     module_id: str = Field(default="behavior_pipeline", min_length=1)
     task_group: Literal["uncivilized_behavior"] = "uncivilized_behavior"
     object_task_group: str = Field(default="uncivilized_behavior", min_length=1)
+    require_bbox: bool = False
     classes: list[BehaviorClassSettings] = Field(default_factory=list)
 
     @model_validator(mode="after")

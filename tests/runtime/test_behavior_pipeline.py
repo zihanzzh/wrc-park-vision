@@ -26,21 +26,25 @@ BEHAVIOR_CLASSES = [
         "class_id": 0,
         "class_name": "trampling_grass",
         "required_object_classes": ["person", "grass"],
+        "decision_rules": ["person must actually stand on the grass"],
     },
     {
         "class_id": 1,
         "class_name": "smoking",
         "required_object_classes": ["person", "cigarette"],
+        "decision_rules": ["person must visibly be smoking"],
     },
     {
         "class_id": 2,
         "class_name": "blocking_fire_lane",
         "required_object_classes": ["vehicle"],
+        "decision_rules": ["vehicle must occupy a marked fire lane"],
     },
     {
         "class_id": 3,
         "class_name": "standing_or_lying_on_bench",
         "required_object_classes": ["person", "bench"],
+        "decision_rules": ["normal sitting is not a violation"],
     },
 ]
 
@@ -62,6 +66,7 @@ def make_behavior_config() -> RuntimeConfig:
             ],
             "behavior": {
                 "enabled": True,
+                "require_bbox": True,
                 "module_id": "behavior_pipeline",
                 "task_group": "uncivilized_behavior",
                 "object_task_group": "uncivilized_behavior",
@@ -164,6 +169,7 @@ class BehaviorPipelineTests(unittest.TestCase):
                     confidence=0.87,
                     evidence_observation_ids=candidate.evidence_observation_ids,
                     reasoning="person is visibly holding and smoking the cigarette",
+                    bbox_normalized_xyxy=(0.1, 0.1, 0.5, 0.9),
                 )
             ]
 
@@ -179,12 +185,32 @@ class BehaviorPipelineTests(unittest.TestCase):
         self.assertEqual(behavior.class_name, "smoking")
         self.assertEqual(behavior.task_group, "uncivilized_behavior")
         self.assertEqual(behavior.confidence, 0.87)
-        self.assertIsNone(behavior.geometry)
+        self.assertIsNotNone(behavior.geometry)
+        self.assertEqual(
+            behavior.geometry.bbox_normalized_xyxy,
+            (0.1, 0.1, 0.5, 0.9),
+        )
         self.assertEqual(behavior.source.module_id, "behavior_pipeline")
-        self.assertEqual(response.fusion.decisions[-1].action, "add_behavior")
+        self.assertEqual(behavior.metadata["geometry_source"], "vlm_multi_image")
+        self.assertEqual(behavior.conflicts, [])
+        self.assertTrue(
+            any(
+                decision.action == "add_behavior"
+                for decision in response.fusion.decisions
+            )
+        )
+        behavior_decision = next(
+            decision
+            for decision in response.fusion.decisions
+            if decision.action == "add_behavior"
+        )
+        self.assertEqual(
+            behavior_decision.geometry_source,
+            "vlm_multi_image",
+        )
         serialized = response.model_dump(mode="json")
         serialized_behavior = next(item for item in serialized["observations"] if item["kind"] == "behavior")
-        self.assertIsNone(serialized_behavior["geometry"])
+        self.assertEqual(serialized_behavior["geometry"]["type"], "bbox")
         self.assertEqual(serialized_behavior["evidence_observation_ids"], behavior.evidence_observation_ids)
 
     def test_full_image_vlm_can_find_behavior_without_object_detections(self) -> None:
@@ -199,6 +225,7 @@ class BehaviorPipelineTests(unittest.TestCase):
                     verdict="confirmed",
                     confidence=0.79,
                     reasoning="vehicle blocks a clearly marked fire lane",
+                    bbox_normalized_xyxy=(0.2, 0.2, 0.8, 0.9),
                 )
             ]
 
@@ -221,6 +248,7 @@ class BehaviorPipelineTests(unittest.TestCase):
                     class_name=class_name,
                     verdict="confirmed",
                     evidence_observation_ids=by_class[class_name].evidence_observation_ids,
+                    bbox_normalized_xyxy=(0.1, 0.1, 0.8, 0.9),
                 )
                 for index, class_name in enumerate(
                     ["trampling_grass", "standing_or_lying_on_bench"],
@@ -254,6 +282,101 @@ class BehaviorPipelineTests(unittest.TestCase):
         self.assertEqual(
             {item.class_name for item in response.observations if item.kind == "behavior"},
             {"trampling_grass", "standing_or_lying_on_bench"},
+        )
+
+    def test_active_scan_finds_smoking_without_cigarette_proposal(self) -> None:
+        def full_image_smoking(
+            summary: DetectionSummary,
+        ) -> list[VLMBehaviorDecision]:
+            self.assertEqual(summary.behavior_candidates, [])
+            return [
+                VLMBehaviorDecision(
+                    id="behavior-review-0001",
+                    candidate_id=None,
+                    class_id=1,
+                    class_name="smoking",
+                    verdict="confirmed",
+                    confidence=0.84,
+                    reasoning="visible cigarette smoke and smoking posture",
+                    bbox_normalized_xyxy=(0.2, 0.1, 0.6, 0.9),
+                )
+            ]
+
+        provider = CapturingBehaviorProvider(full_image_smoking)
+        response = self.run_pipeline(
+            [behavior_detection(0, "person", (20, 10, 60, 75))],
+            provider,
+        )
+
+        self.assertEqual(provider.calls, 1)
+        behavior = next(item for item in response.observations if item.kind == "behavior")
+        self.assertEqual(behavior.class_name, "smoking")
+        self.assertIsNotNone(behavior.geometry)
+
+    def test_active_scan_finds_trampling_without_grass_proposal(self) -> None:
+        def full_image_trampling(
+            summary: DetectionSummary,
+        ) -> list[VLMBehaviorDecision]:
+            self.assertEqual(summary.behavior_candidates, [])
+            return [
+                VLMBehaviorDecision(
+                    id="behavior-review-0001",
+                    candidate_id=None,
+                    class_id=0,
+                    class_name="trampling_grass",
+                    verdict="confirmed",
+                    confidence=0.81,
+                    reasoning="the person's feet are visibly on the lawn",
+                    bbox_normalized_xyxy=(0.15, 0.1, 0.65, 0.95),
+                )
+            ]
+
+        response = self.run_pipeline(
+            [behavior_detection(0, "person", (15, 8, 65, 76))],
+            CapturingBehaviorProvider(full_image_trampling),
+        )
+
+        behavior = next(item for item in response.observations if item.kind == "behavior")
+        self.assertEqual(behavior.class_name, "trampling_grass")
+
+    def test_active_scan_returns_no_behavior_for_normal_scene(self) -> None:
+        provider = CapturingBehaviorProvider(lambda summary: [])
+        response = self.run_pipeline([], provider)
+
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(response.review.status, "completed")
+        self.assertEqual(response.review.behaviors, [])
+        self.assertFalse(any(item.kind == "behavior" for item in response.observations))
+
+    def test_confirmed_behavior_without_required_bbox_is_rejected_safely(
+        self,
+    ) -> None:
+        provider = CapturingBehaviorProvider(
+            lambda summary: [
+                VLMBehaviorDecision(
+                    id="behavior-review-0001",
+                    candidate_id=None,
+                    class_id=1,
+                    class_name="smoking",
+                    verdict="confirmed",
+                    confidence=0.8,
+                    reasoning="smoking is visible",
+                )
+            ]
+        )
+
+        response = self.run_pipeline([], provider)
+
+        self.assertEqual(response.status, "partial_success")
+        self.assertFalse(any(item.kind == "behavior" for item in response.observations))
+        self.assertTrue(
+            any(
+                issue.code == "missing_behavior_geometry"
+                for issue in response.review.issues
+            )
+        )
+        self.assertTrue(
+            any(error.code == "behavior_geometry_invalid" for error in response.errors)
         )
 
     def test_vlm_failure_preserves_detections_and_adds_no_behavior(self) -> None:

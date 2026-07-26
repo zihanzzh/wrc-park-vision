@@ -88,6 +88,7 @@ def _compact_review_context(
             {
                 "class": item.class_name,
                 "objects": item.required_object_classes,
+                "rules": item.decision_rules,
             }
             for item in summary.behavior_classes
         ]
@@ -159,7 +160,8 @@ def _build_prompt(
         required_review_observation_ids,
         candidate_reasons,
     )
-    return f"""一次完成检测审核、漏检扫描和行为判断。original_image 是坐标唯一基准；crop 只用于看细节。
+    return f"""You are the final visual reasoning judge. Detector results are suggestions; reject or correct them when visible evidence conflicts.
+一次完成检测审核、漏检扫描和主动行为判断。original_image 是坐标唯一基准；crop 只用于看细节。
 合法 task：{json.dumps(TASK_GROUPS, **compact)}
 合法 object：{json.dumps(class_catalog, **compact)}
 合法 behavior：{json.dumps(BEHAVIOR_CLASS_NAMES, **compact)}
@@ -169,10 +171,10 @@ crop 映射：{json.dumps(crop_catalog, **compact)}
 
 规则：
 1. 审核输入中每个 detection id 在 yolo_reviews 恰好出现一次。verdict 只能是 confirmed/rejected/corrected/uncertain；仅 corrected 增加 task_group、class_name。
-2. 按可见结构判断。uncertain 只用于确实看不清；普通塑料瓶、香烟盒、纸团不是 spray_can。冲突项分别判断。
+2. 按可见结构判断。若 detector 错误，必须 rejected 或 corrected，不能只确认；普通塑料瓶不是 spray_can。uncertain 只用于确实看不清。
 3. new_findings 只报允许类别中的明确漏检，字段仅 task_group、class_name、confidence、bbox_normalized_xyxy，可选 crop_id。bbox 必须是 original_image 的 [x1,y1,x2,y2]。
-4. behavior candidate 不是结论。behavior_reviews 仅包含四类行为；候选项字段仅 candidate_id、class_name、verdict、可选 confidence。无候选也扫描全图；无行为返回 []。正常坐长椅不违规。
-5. 只输出一个 JSON object，必须含 yolo_reviews、new_findings、behavior_reviews。禁止 Markdown、解释、reasoning、null 和多余字段。
+4. behavior candidate 不是结论。无论有无 candidate，都主动检查四类行为。confirmed 行为必须输出 class_name、verdict、confidence、原图 bbox_normalized_xyxy、极短 reasoning；有候选时增加 candidate_id。无行为返回 []。
+5. 只输出一个 JSON object，必须含 yolo_reviews、new_findings、behavior_reviews。禁止 Markdown、前后解释、null 和未定义字段；除 confirmed behavior 外不要输出 reasoning。
 最小输出模板：{json.dumps(output_template, **compact)}
 """
 

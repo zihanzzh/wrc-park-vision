@@ -315,7 +315,10 @@ def fuse_review_results(
                 behavior_review_id=preserved_behavior.metadata.get("behavior_review_id"),
                 final_task_group=preserved_behavior.task_group,
                 final_class_name=preserved_behavior.class_name,
-                geometry_source="none" if preserved_behavior.geometry is None else "yolo",
+                geometry_source=preserved_behavior.metadata.get(
+                    "geometry_source",
+                    "none" if preserved_behavior.geometry is None else "vlm_multi_image",
+                ),
                 evidence_observation_ids=list(preserved_behavior.evidence_observation_ids),
                 reasoning=preserved_behavior.reasoning,
             )
@@ -324,7 +327,8 @@ def fuse_review_results(
     boxed = [
         observation
         for observation in finalized
-        if isinstance(observation.geometry, BBoxGeometry)
+        if observation.kind == "detection"
+        and isinstance(observation.geometry, BBoxGeometry)
     ]
     for index, first in enumerate(boxed):
         for second in boxed[index + 1 :]:

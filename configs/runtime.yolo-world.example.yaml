@@ -64,29 +64,29 @@ modules:
       - task_group: uncivilized_behavior
         class_id: 0
         class_name: person
-        prompts: [person]
+        prompts: [person, people, human, pedestrian]
         visual_description: "可见人体或主要身体轮廓。"
       - task_group: uncivilized_behavior
         class_id: 1
         class_name: bench
-        prompts: [bench, park bench]
+        prompts: [bench, park bench, seat]
         visual_description: "供人坐卧的长条座面，通常有支腿或靠背。"
       - task_group: uncivilized_behavior
         class_id: 2
         class_name: grass
-        prompts: [grass, lawn]
+        prompts: [grass, lawn, turf, green area]
         visual_description: "连续草叶覆盖的草坪或草地区域。"
         distinguishing_rules: ["不能只凭绿色区域判断。"]
       - task_group: uncivilized_behavior
         class_id: 3
         class_name: cigarette
-        prompts: [cigarette]
+        prompts: [cigarette, smoker, smoking, cigarette smoke]
         visual_description: "细小柱状香烟，可见滤嘴或燃烧端。"
         distinguishing_rules: ["香烟盒不是单支 cigarette。"]
       - task_group: uncivilized_behavior
         class_id: 4
         class_name: vehicle
-        prompts: [vehicle, car]
+        prompts: [vehicle, car, truck, bus, parking]
         visual_description: "可载人或货物的车辆主体，可见车身和车轮。"
     device: auto
     confidence: 0.10
@@ -115,6 +115,7 @@ modules:
 
 behavior:
   enabled: true
+  require_bbox: true
   module_id: behavior_pipeline
   task_group: uncivilized_behavior
   object_task_group: uncivilized_behavior
@@ -122,15 +123,23 @@ behavior:
     - class_id: 0
       class_name: trampling_grass
       required_object_classes: [person, grass]
+      decision_rules:
+        - "确认人的脚或身体支撑点实际位于草坪区域；仅在草坪旁不算违规。"
     - class_id: 1
       class_name: smoking
       required_object_classes: [person, cigarette]
+      decision_rules:
+        - "确认人物正在吸烟，可依据香烟、烟雾或明确吸烟姿态；仅出现香烟不算违规。"
     - class_id: 2
       class_name: blocking_fire_lane
       required_object_classes: [vehicle]
+      decision_rules:
+        - "确认车辆停放或占用有消防通道、禁停标识或明确通道语境的区域。"
     - class_id: 3
       class_name: standing_or_lying_on_bench
       required_object_classes: [person, bench]
+      decision_rules:
+        - "确认人物站在或躺在长椅上；正常坐在长椅上不算违规。"
 
 review:
   low_confidence_threshold: 0.45

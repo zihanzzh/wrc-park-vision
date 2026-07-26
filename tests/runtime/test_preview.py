@@ -106,6 +106,37 @@ class PreviewTests(unittest.TestCase):
             with Image.open(preview_path) as rendered:
                 self.assertEqual(rendered.size, (100, 80))
 
+    def test_preview_draws_behavior_bbox_from_final_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = write_test_image(root / "source.png", (100, 80))
+            behavior = Observation(
+                id="behavior-0001",
+                kind="behavior",
+                task_group="uncivilized_behavior",
+                class_id=1,
+                class_name="smoking",
+                confidence=0.86,
+                source=ObservationSource(
+                    module_id="behavior_pipeline",
+                    backend="qwen2_5_vl",
+                    model_id="qwen-vl",
+                ),
+                geometry=BBoxGeometry.from_xyxy((20, 10, 60, 70), 100, 80),
+                reasoning="visible smoking posture",
+                metadata={"geometry_source": "vlm_multi_image"},
+            )
+            response = make_response([behavior], image_path)
+            preview_path = root / "preview.jpg"
+
+            render_preview(image_path, response, preview_path, PreviewSettings())
+
+            with Image.open(preview_path) as rendered:
+                preview = rendered.convert("RGB")
+                edge_pixel = preview.getpixel((20, 50))
+                self.assertEqual(rendered.size, (100, 80))
+            self.assertGreater(edge_pixel[2], edge_pixel[0])
+
     def test_preview_draws_vlm_finding_from_final_observations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

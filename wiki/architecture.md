@@ -151,12 +151,14 @@ example 配置始终展示正式 8 类。当前 gitignored local 配置仅启用
 YOLO-World 基础对象 observations
   -> 配置化 candidate rules
   -> Detection Summary 携带 behavior classes/candidates
-  -> 同一次全图 Qwen Review 验证 candidate 并扫描漏检行为
+  -> 同一次 Multi-Image Qwen Review 验证 candidate 并主动扫描四类行为
   -> 仅 confirmed 结果生成 kind: behavior observation
   -> Fusion / JSON / Preview
 ```
 
-`person + grass`、`person + cigarette`、`vehicle`、`person + bench` 只生成 candidate，不能直接判定行为。即使没有 candidate，启用的 Qwen provider 仍需在同一次请求中扫描四类明显行为。当前行为 observation 可以没有 geometry，但会保留 VLM reasoning 和已有 evidence observation IDs。
+`person + grass`、`person + cigarette`、`vehicle`、`person + bench` 只生成 candidate，不能直接判定行为。即使 YOLO-World 没有检出 `grass`、`cigarette` 或任何 behavior candidate，只要 Behavior Pipeline 与 Qwen provider 启用，同一次请求仍主动扫描四类行为。
+
+四类行为的关系判据由配置中的 `decision_rules` 提供。confirmed behavior 可携带相对原图的 normalized bbox；当前正式 example 配置要求 bbox，Pipeline 将其映射为 `BBoxGeometry`，供 Runtime JSON 和 Preview 共用。旧配置不声明 `require_bbox` 时仍兼容无框行为。Competition adapter 暂不增加 behavior bbox 字段。
 
 当前没有实现多帧、tracking、pose、segmentation 或消防通道区域模型；这些能力后续可在 Behavior Pipeline 内增加，不需要重写主 Pipeline。
 
@@ -165,7 +167,7 @@ YOLO-World 基础对象 observations
 YOLO-World 是现有 detector 集合中的 object-level backend，不删除已有 YOLO11m。当前同一个模型实例只覆盖：
 
 - `prohibited_items`：正式 8 类禁带品。
-- `uncivilized_behavior`：`person`、`bench`、`grass`、`cigarette`、`vehicle` 等行为判断需要的基础物体。
+- `uncivilized_behavior`：`person`、`bench`、`grass`、`cigarette`、`vehicle` 五个 canonical 基础对象；每个对象可配置有限同义 prompts，例如 people/human/pedestrian、lawn/turf、smoker/smoking/smoke、car/truck/bus/parking 和 park bench/seat。
 
 `garbage` 不得出现在 YOLO-World `open_vocabulary_classes` 中；六类垃圾由独立 Ultralytics YOLO11m module 输出。
 

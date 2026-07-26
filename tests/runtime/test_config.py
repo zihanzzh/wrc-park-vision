@@ -405,6 +405,39 @@ modules:
         )
         self.assertEqual(garbage.backend, "ultralytics")
         self.assertEqual(garbage.task_group, "garbage")
+        behavior_prompts = {
+            item.class_name: item.prompts
+            for item in classes
+            if item.task_group == "uncivilized_behavior"
+        }
+        self.assertEqual(
+            behavior_prompts,
+            {
+                "person": ["person", "people", "human", "pedestrian"],
+                "bench": ["bench", "park bench", "seat"],
+                "grass": ["grass", "lawn", "turf", "green area"],
+                "cigarette": [
+                    "cigarette",
+                    "smoker",
+                    "smoking",
+                    "cigarette smoke",
+                ],
+                "vehicle": ["vehicle", "car", "truck", "bus", "parking"],
+            },
+        )
+        self.assertTrue(config.behavior.require_bbox)
+        self.assertEqual(
+            [item.class_name for item in config.behavior.classes],
+            [
+                "trampling_grass",
+                "smoking",
+                "blocking_fire_lane",
+                "standing_or_lying_on_bench",
+            ],
+        )
+        self.assertTrue(
+            all(item.decision_rules for item in config.behavior.classes)
+        )
         self.assertEqual(
             garbage.expected_class_names,
             [
@@ -651,6 +684,49 @@ behavior:
             )
             with self.assertRaisesRegex(ConfigError, "four canonical classes"):
                 load_runtime_config(config_path, validate_model_paths=False)
+
+    def test_behavior_guidance_and_bbox_requirement_are_backward_compatible(
+        self,
+    ) -> None:
+        config = RuntimeConfig.model_validate(
+            {
+                "modules": [
+                    {
+                        "id": "detector",
+                        "enabled": True,
+                        "type": "detection",
+                        "task_group": "garbage",
+                        "backend": "ultralytics",
+                        "model_path": "model.pt",
+                        "model_id": "model",
+                        "expected_class_names": ["paper"],
+                    }
+                ],
+                "behavior": {
+                    "enabled": True,
+                    "classes": [
+                        {
+                            "class_id": index,
+                            "class_name": class_name,
+                            "required_object_classes": ["person"],
+                        }
+                        for index, class_name in enumerate(
+                            (
+                                "trampling_grass",
+                                "smoking",
+                                "blocking_fire_lane",
+                                "standing_or_lying_on_bench",
+                            )
+                        )
+                    ],
+                },
+            }
+        )
+
+        self.assertFalse(config.behavior.require_bbox)
+        self.assertTrue(
+            all(not item.decision_rules for item in config.behavior.classes)
+        )
 
 
 if __name__ == "__main__":

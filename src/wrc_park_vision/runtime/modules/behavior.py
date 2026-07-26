@@ -32,6 +32,7 @@ class BehaviorPipeline:
                 class_id=item.class_id,
                 class_name=item.class_name,
                 required_object_classes=list(item.required_object_classes),
+                decision_rules=list(item.decision_rules),
             )
             for item in self.settings.classes
         ]
@@ -97,12 +98,17 @@ class BehaviorPipeline:
                         backend=review.provider or "vlm",
                         model_id=review.model_id or "unknown",
                     ),
-                    geometry=None,
+                    geometry=decision.geometry,
                     evidence_observation_ids=list(decision.evidence_observation_ids),
                     reasoning=decision.reasoning,
                     metadata={
                         "behavior_review_id": decision.id,
                         "candidate_id": decision.candidate_id,
+                        "geometry_source": (
+                            "vlm_multi_image"
+                            if decision.geometry is not None
+                            else "none"
+                        ),
                     },
                 )
             )

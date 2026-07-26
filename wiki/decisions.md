@@ -241,7 +241,7 @@
 
 - 日期：2026-07-25
 - 决策：Candidate Selector 未选中的 detector observation 直接保留，使用 `review.required=false` 和 Fusion action `keep_detector_result`；只有 required observation 缺项或 Review 失败才标记 `keep_review_failed`。
-- 说明：完整 Detection Summary 继续发送给 VLM，用于全图理解、漏检和行为判断，但不要求为非候选 detection 输出 `yolo_reviews`。
+- 说明：Runtime 内部保留完整 Detection Summary；为降低 Thor token 与延迟，Prompt 中只发送 required detection。原图仍始终发送，用于漏检和主动行为判断。
 
 ### D041：Competition SDK Response 使用独立 V1 adapter
 
@@ -255,6 +255,13 @@
 - 决策：Runtime 使用 10 秒总预算限制 VLM 剩余 timeout，并在失败时按策略降级；该机制只负责异常保护。
 - 验收：只有 Thor warm-run 中 VLM 实际完成、结果非 degraded，且至少 5 次 warm runs 的 median total 小于 10 秒，才判定性能达标。VLM 被跳过、timeout 或失败后的快速返回不计为通过。
 - 性能输入：默认最多 3 个重点 crops，面积达到原图 80% 的 crop 不重复发送；VLM 图像默认最长边 640、JPEG quality 85，详细 timing 和 token 使用写入 Review metrics。
+
+### D043：不文明行为使用 object candidate + 主动全图扫描
+
+- 日期：2026-07-25
+- 决策：四类行为继续使用配置化 object candidate，但 candidate 不是调用 VLM 的前置条件。Behavior Pipeline 启用时，同一次 Multi-Image VLM 请求必须主动检查 `trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。
+- 定位：当前 example 配置要求 confirmed behavior 返回相对原图的 normalized bbox；Pipeline 校验并映射为最终 behavior observation geometry。该字段是 Runtime schema 的向后兼容扩展，Competition Response V1 不新增字段。
+- 融合：VLM 对必审 detector observation 的明确 `rejected` / `corrected` 优先于 detector 语义，原检测仍保留在 Detection Summary 与 FusionDecision 中供审计。VLM behavior finding 只在 `confirmed` 时进入最终 observations。
 
 ## 被替代的历史方案
 
