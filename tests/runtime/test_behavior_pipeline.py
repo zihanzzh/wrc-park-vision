@@ -4,10 +4,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image
+
 from wrc_park_vision.runtime.backends.base import BackendDetection
+from wrc_park_vision.runtime.competition import build_competition_response
 from wrc_park_vision.runtime.config import RuntimeConfig
 from wrc_park_vision.runtime.modules.detection import DetectionModule
 from wrc_park_vision.runtime.pipeline import RuntimePipeline
+from wrc_park_vision.runtime.preview import render_preview
 from wrc_park_vision.runtime.review import ReviewProvider
 from wrc_park_vision.runtime.schemas import (
     DetectionSummary,
@@ -212,6 +216,18 @@ class BehaviorPipelineTests(unittest.TestCase):
         serialized_behavior = next(item for item in serialized["observations"] if item["kind"] == "behavior")
         self.assertEqual(serialized_behavior["geometry"]["type"], "bbox")
         self.assertEqual(serialized_behavior["evidence_observation_ids"], behavior.evidence_observation_ids)
+        competition = build_competition_response(response)
+        self.assertEqual(
+            [item.class_name for item in competition.behaviors],
+            ["smoking"],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image_path = write_test_image(root / "source.jpg")
+            preview_path = root / "preview.jpg"
+            render_preview(image_path, response, preview_path, make_behavior_config().preview)
+            with Image.open(preview_path) as preview:
+                self.assertEqual(preview.size, (100, 80))
 
     def test_full_image_vlm_can_find_behavior_without_object_detections(self) -> None:
         def full_image_finding(summary: DetectionSummary) -> list[VLMBehaviorDecision]:

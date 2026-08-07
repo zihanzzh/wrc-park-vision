@@ -1,5 +1,14 @@
 # Current Status
 
+## 2026-08-03 当前正式方案
+
+- 正式 VLM 从 Qwen2.5-VL-7B 切换为 Qwen2.5-VL-32B，alias 为可配置的 `qwen-vl-32b`；每张图片仍只有一次 Multi-Image 请求。
+- 10 秒正式性能目标已取消。当前优先级为物体准确率、跨模型冲突裁决、四类行为准确率和输出协议稳定性；300/180 秒 timeout 仅作安全保护。
+- behavior candidate 必须在 `behavior_reviews` 中逐一返回 decision；缺 section、空数组、部分覆盖和重复 candidate 均产生结构化 issue。
+- confirmed behavior 仍必须提供原图 normalized bbox，缺失或非法 bbox 不进入最终 observations、Preview 或 Competition behaviors。
+- 正式输入参数为最长边 1024、JPEG quality 90、最多 5 crops、max tokens 1200；Fusion 与 Competition Adapter 无需修改。
+- 自动验证：全部 Runtime `unittest` 140 项、`compileall`、`git diff --check` 和 32B config validation 均通过；真实 Thor 32B 尚未运行。
+
 ## 当前阶段
 
 禁带品与垃圾两个独立 detector 已完成训练，并已在 macOS 和 NVIDIA Thor 上跑通检测链路。YOLO-World backend、单图 Behavior Pipeline 和 Qwen2.5-VL Review 已接入共享 Runtime；Thor 上已跑通旧单图 7B Review，Runtime V3 单次多图链路尚待实测。
@@ -36,22 +45,22 @@
 - required observation 若 VLM 请求失败、解析失败或缺项，才使用 `keep_review_failed`；缺少必审项会令顶层结果降级为 `partial_success`。
 - Preview 继续只绘制 Fusion 后 observations，并用 task group 正常色、corrected、uncertain、review_failed 和 unresolved conflict 状态色区分结果；rejected 不作为有效框绘制。
 - 新增独立 Competition SDK Response V1 adapter 和 `competition_result.json`，不压缩或替代内部 `result.json`。协议字段是当前暂定结构，正式 SDK 到位后只调整 adapter。
-- Runtime 从图片处理开始执行 10 秒总预算；VLM timeout 取 pass timeout、provider timeout 和剩余预算的最小值，预算不足时不发起 VLM 并明确 degraded。
-- deadline fallback 只用于异常保护。真实性能达标必须在 Thor warm-run 中完成 VLM、非 degraded，并满足至少 5 次 warm runs 的 median total 小于 10 秒。
+- Runtime 从图片处理开始执行 300 秒总安全预算；VLM timeout 取 pass timeout、provider timeout 和剩余预算的最小值，预算不足时不发起 VLM 并明确 degraded。
+- deadline fallback 只用于异常保护。Thor accuracy-first 验证要求 VLM 完成、结果非 degraded，并人工核对语义输出。
 - VLM 请求已增加 prompt、原图/crop 编码、序列化、payload、图像数、token、HTTP round trip、响应长度、解析和 finish reason 指标。
-- VLM 输入默认最长边 640、JPEG quality 85；默认最多 3 个 crops，面积达到原图 80% 的 crop 跳过；Prompt 和输出模板已压缩。
+- VLM 输入最长边 1024、JPEG quality 90；最多 5 个 crops，面积达到原图 90% 的 crop 跳过；max tokens 为 1200。
 - 新增 `scripts/runtime/benchmark_thor.py`，包含 readiness、warmup、至少 5 次 warm runs 与严格非降级验收。本轮没有运行真实 Thor benchmark。
 
 ## Runtime V3 单次多图 Review
 
 - V2 的 Full Image + Crop Scan 顺序双请求已从主 Pipeline 移除。
 - Qwen provider 启用时每张图片只执行一次请求，同时发送原始图片和少量重点 crops。
-- Review candidates 来自低置信、跨模型冲突、小目标和 behavior candidates；crop 围绕候选扩展、合并，默认限制为最多 3 个，并跳过接近全图的重复 crop。
+- Review candidates 来自低置信、跨模型冲突、小目标和 behavior candidates；crop 围绕候选扩展、合并，最多保留 5 个，并跳过接近全图的重复 crop。
 - `yolo_reviews` 只要求覆盖 candidates 引用的 observation，重复引用会去重；未进入候选的 detection 不要求 VLM 输出 decision，完整 Detection Summary 仍用于全图理解、漏检和行为判断。
 - 所有 VLM finding bbox 都使用原图 normalized 坐标；`crop_id` 只表示判断参考，不再执行 crop-local 坐标映射。
 - 同一次响应完成 YOLO review、漏检发现和四类行为判断，继续使用逐项容错 Parser 与现有 Fusion。
 - `review.multi_image`、`candidate_selection` 和 `important_crops` 参数均配置化；V2 配置可迁移为单次 V3 请求。
-- Runtime V3 目前通过 mock 自动测试；10 秒 deadline 与降级已实现，但真实 VLM 完成后的 Thor 延迟和准确率尚未复测。
+- Runtime V3 目前通过 mock 自动测试；300/180 秒安全 timeout 与降级已实现，但 32B 真实 VLM 的 Thor 准确率尚未复测。
 
 ## Detection Module 分工 Phase 2
 
@@ -71,7 +80,7 @@
 - FusionDecision 同时记录 YOLO confidence 与 VLM confidence；Review 整体失败或单条缺失审核时默认 `keep_flagged`，不会静默当作 confirmed。
 - Phase 1 当时没有修改 Pipeline、Preview、Crop 或双 Pass；这些剩余能力现已在最终阶段完成。
 
-## Qwen2.5-VL-7B 视觉类别指南
+## Qwen2.5-VL-7B 历史实测：视觉类别指南
 
 - Thor 上 `Qwen2.5-VL-7B-Instruct-AWQ` 实测：YOLO-World 约 0.87 秒、VLM Review 约 2.61 秒、总时间约 3.50 秒，`status=success`，JSON 可正常解析且每张图片仍只有一次 VLM 请求。
 - 当前主要问题由响应格式和延迟转为细粒度类别准确率：测试中的 `kick_scooter` 曾被 7B 误判为 `skateboard`。
@@ -81,7 +90,7 @@
 - 旧配置不提供视觉定义时仍可加载并构建 Prompt；非 YOLO-World detector 不受影响。
 - 尚未完成禁带品、垃圾和不文明行为三类任务的系统真实图片测试，视觉指南对 Thor 7B 准确率的提升仍需复测确认。
 
-## Qwen2.5-VL-7B Prompt 优化
+## Qwen2.5-VL-7B 历史实测：Prompt 优化
 
 - Thor 上的 `Qwen2.5-VL-7B-Instruct-AWQ` 已能被 Runtime 成功调用，但旧 Prompt 中的 `"允许的 task_group"` 被 7B 原样复制，导致严格 Parser 拒绝响应。
 - Prompt 已改为紧凑规则、明确枚举和基于本次 observation/candidate 动态生成的合法 JSON 模板，不再把说明文字放入 JSON 字段值。
@@ -107,8 +116,8 @@
   -> Ultralytics YOLO11m garbage detection
   -> Detection Summary + behavior candidates
   -> 选择低置信、冲突、小目标和行为候选
-  -> 生成/合并默认最多 3 个重点 crops，并跳过近全图 crop
-  -> 可选 Qwen2.5-VL：原图 + crops 的单次 multi-image review
+  -> 生成/合并最多 5 个重点 crops，并跳过近全图 crop
+  -> Qwen2.5-VL-32B：原图 + crops 的单次 multi-image review
   -> 原图坐标 finding 与跨来源去重
   -> Final Fusion
   -> PipelineResponse
@@ -136,7 +145,7 @@
 当前明确未完成：
 
 - 三类任务的真实 Qwen2.5-VL 系统效果验证。
-- Thor 上真实完成 VLM 且非 degraded 的 10 秒 warm-run 性能验收。
+- Thor 上 Qwen2.5-VL-32B 真实完成、非 degraded 的 accuracy-first 验收。
 - 多帧 behavior、tracking、pose 和区域关系增强。
 - TensorRT backend、正式 Thor engine 部署与 benchmark。
 - API、ROS2、stream 和 tracking；detector parallel 仅提供配置能力，尚待 Thor GPU 竞争实测。
@@ -149,7 +158,7 @@
 - 本轮使用 mock HTTP，确认原图与全部重点 crops 只通过一次请求发送；本轮没有访问真实服务。
 - detector 实际运行：macOS 与 NVIDIA Thor 已跑通。
 - VLM 实际运行：Thor 7B 已完成单次全图 Review 并返回合法 JSON；当前需要复测配置驱动视觉指南的分类准确率。
-- 10 秒完整链路：安全 deadline 已实现；真实 VLM 非降级 warm-run 尚未实测，不能宣称达标。
+- 32B 完整链路：安全 timeout 已配置；真实 VLM 非降级 warm-run 尚未实测，不能宣称 accuracy-first 达标。
 
 ## 数据与设备边界
 
@@ -163,5 +172,5 @@
 1. 在 Thor 上用固定验收图片复测 `skateboard` / `kick_scooter` 等相似类别，记录视觉指南启用前后的准确率与耗时。
 2. 对 8 类禁带品、6 类垃圾和四类不文明行为执行系统真实图片测试。
 3. 人工核对 confirm / reject / correct、Multi-Image finding，以及 JSON 与 Preview 一致性。
-4. 使用 `scripts/runtime/benchmark_thor.py` 预热后连续运行至少 5 次，要求 VLM 全部完成、全部非 degraded、median total 小于 10 秒。
+4. 使用 `scripts/runtime/benchmark_thor.py` 预热后连续运行至少 5 次，要求 VLM 全部完成、全部非 degraded，并记录 timing 供后续优化。
 5. 根据真实响应稳定性微调配置中的视觉定义，不放宽 Parser 的业务类别边界。

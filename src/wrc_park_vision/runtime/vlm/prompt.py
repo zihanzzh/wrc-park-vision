@@ -27,7 +27,16 @@ def _build_output_template(
             if item.observation_id in required_ids
         ],
         "new_findings": [],
-        "behavior_reviews": [],
+        "behavior_reviews": [
+            {
+                "candidate_id": item.id,
+                "class_name": item.class_name,
+                "verdict": "uncertain",
+                "confidence": 0.5,
+                "reasoning": "Visible evidence is insufficient.",
+            }
+            for item in summary.behavior_candidates
+        ],
     }
 
 
@@ -160,7 +169,18 @@ def _build_prompt(
         required_review_observation_ids,
         candidate_reasons,
     )
-    return f"""You are the final visual reasoning judge. Detector results are suggestions; reject or correct them when visible evidence conflicts.
+    confirmed_behavior_example = {
+        "candidate_id": "behavior-candidate-0001",
+        "class_name": "trampling_grass",
+        "verdict": "confirmed",
+        "confidence": 0.92,
+        "bbox_normalized_xyxy": [0.15, 0.08, 0.84, 0.95],
+        "reasoning": (
+            "The person's feet and body support points are visibly inside "
+            "the grass area."
+        ),
+    }
+    return f"""You are the final visual reasoning judge. Detector outputs are visual proposals, not ground truth. You are the final semantic judge for every selected observation; reject or correct detector results when visible evidence conflicts.
 一次完成检测审核、漏检扫描和主动行为判断。original_image 是坐标唯一基准；crop 只用于看细节。
 合法 task：{json.dumps(TASK_GROUPS, **compact)}
 合法 object：{json.dumps(class_catalog, **compact)}
@@ -171,10 +191,12 @@ crop 映射：{json.dumps(crop_catalog, **compact)}
 
 规则：
 1. 审核输入中每个 detection id 在 yolo_reviews 恰好出现一次。verdict 只能是 confirmed/rejected/corrected/uncertain；仅 corrected 增加 task_group、class_name。
-2. 按可见结构判断。若 detector 错误，必须 rejected 或 corrected，不能只确认；普通塑料瓶不是 spray_can。uncertain 只用于确实看不清。
+2. 按可见结构判断。若 detector 错误，必须 rejected 或 corrected，不能只确认；uncertain 只用于确实看不清。spray_can 只有在明确看见金属加压罐体和喷嘴/按压喷头等 aerosol can 结构时才能 confirmed。普通塑料瓶不是 spray_can；塑料饮料瓶、饮料瓶、香烟盒、纸盒、食品容器、普通包装或垃圾不得 confirmed 为 spray_can；属于合法目录中的其他类别时 corrected，否则 rejected。
 3. new_findings 只报允许类别中的明确漏检，字段仅 task_group、class_name、confidence、bbox_normalized_xyxy，可选 crop_id。bbox 必须是 original_image 的 [x1,y1,x2,y2]。
-4. behavior candidate 不是结论。无论有无 candidate，都主动检查四类行为。confirmed 行为必须输出 class_name、verdict、confidence、原图 bbox_normalized_xyxy、极短 reasoning；有候选时增加 candidate_id。无行为返回 []。
-5. 只输出一个 JSON object，必须含 yolo_reviews、new_findings、behavior_reviews。禁止 Markdown、前后解释、null 和未定义字段；除 confirmed behavior 外不要输出 reasoning。
+4. behavior candidate 不是结论。存在 candidate 时，每个 candidate_id 必须在 behavior_reviews 中恰好出现一次，不能跳过或返回空数组；verdict 只能是 confirmed/rejected/uncertain。confirmed 必须含 candidate_id（主动全图发现时省略）、class_name、verdict、confidence、原图 bbox_normalized_xyxy 和极短 reasoning；bbox 覆盖主要违规人物、车辆或违规关系区域。rejected/uncertain 可省略 bbox。
+5. 无论有无 candidate，都主动检查四类行为：trampling_grass、smoking、blocking_fire_lane、standing_or_lying_on_bench。trampling_grass 仅当脚部、身体支撑点或实际行走位置在草坪上；仅在草坪旁、道路边或草坪背景前必须拒绝。smoking 需要香烟、烟雾、明确手到嘴动作或其他强视觉证据；仅有人、香烟盒或模糊手部动作必须拒绝。blocking_fire_lane 需要车辆实际停放/占用消防或紧急通道、明确禁停区域，或明显阻塞应急通行；普通道路车辆必须拒绝。standing_or_lying_on_bench 仅确认站在或躺在长椅上；正常坐姿必须拒绝。
+6. 只输出一个 JSON object；顶层字段必须且只能是 yolo_reviews、new_findings、behavior_reviews，三个值都必须是数组。禁止 behaviors、findings、Markdown、前后解释、null、额外顶层字段和长篇 reasoning。
+confirmed behavior 完整格式示例：{json.dumps(confirmed_behavior_example, **compact)}
 最小输出模板：{json.dumps(output_template, **compact)}
 """
 

@@ -12,7 +12,7 @@
 
 - [[current-status]]：项目现在处于什么阶段、已完成什么、下一步是什么。
 - [[competition-rules]]：比赛任务、计分风险和视觉系统约束。
-- [[architecture]]：共享多模型 Runtime、条件式 VLM、10 秒预算和 Thor 交付架构。
+- [[architecture]]：共享多模型 Runtime、单次 Multi-Image VLM、accuracy-first 安全预算和 Thor 交付架构。
 - [[decisions]]：当前有效决策，以及被新方案替代的历史决策。
 - [[open-questions]]：真正尚未确认、不能自行假设的问题。
 - [[class-list]]：独立禁带品/垃圾 detector 的 class id、task group 和不文明行为定义。

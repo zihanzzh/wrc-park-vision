@@ -36,24 +36,20 @@
 - 真实 smoke test 使用哪些固定验收图片和期望结果？
 - Preview 失败但推理成功时，机器人侧是否仍按推理成功处理？
 
-## 10 秒预算与 VLM
+## Accuracy-first VLM 验证
 
-- 10 秒从图片发送、Thor 接收还是 Runtime 开始处理时计时？
-- 当前代码从 Runtime 开始处理图片计时；官方接口是否要求把传输和机器人 SDK 调用也计入同一个 10 秒窗口？
-- 多个 YOLO engine、结果融合和 VLM 的正式预算分配是否接受当前 0.75 秒 Fusion/输出预留？
-- Runtime V3 单次 Multi-Image Review 在 Thor 上的实际耗时是多少，是否能稳定把完整链路控制在 10 秒内？
-- 当前候选阈值、crop context scale、合并阈值和最多 3 个 crops 是否需要根据真实比赛分辨率调整？
-- Thor 上 VLM 输入最长边 640 与 768 的准确率/延迟差异是什么？
+- Qwen2.5-VL-32B 在 Thor 上能否稳定加载，并以 `qwen-vl-32b` 暴露 OpenAI-compatible endpoint？
+- 当前候选阈值、crop context scale、合并阈值和最多 5 个 crops 是否适合真实比赛图片？
+- Thor 上 1024 最长边、JPEG quality 90 对小目标和四类行为的真实准确率如何？
 - 当前 vLLM 是否确认支持 `response_format={"type":"json_object"}`，以及启用后是否改善稳定性而不增加延迟？
 - VLM 原图 normalized bbox 的真实定位误差是否足以使用默认 0.65 IoU 去重阈值？
 - Qwen / VLM 具体运行在 3090、其他高算力设备还是 Thor？
 - 比赛现场是否允许额外设备和联网？
 - 已确认单图 Review 使用完整原图；未来 behavior 是否还需要连续多帧序列？
-- Qwen2.5-VL 使用哪个准确模型版本、OpenAI-compatible endpoint、认证方式和部署设备？
+- Qwen2.5-VL-32B 使用哪个准确量化版本和 vLLM 启动参数？
 - 真实服务是否稳定遵循当前严格 JSON contract，是否需要有限重试或结构化输出约束？
 - VLM 超时后返回哪些已确认结果，机器人采取什么动作？
 - 两个 detector 全部失败但 VLM 返回 finding 时，顶层状态应为 `failure` 还是 `partial_success`？
-- 最终是否需要通过模型尺寸或触发策略降低链路时间？
 
 ## Thor 部署
 

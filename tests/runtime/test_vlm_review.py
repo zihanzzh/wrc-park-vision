@@ -363,6 +363,42 @@ class VLMReviewTests(unittest.TestCase):
         self.assertIn("vehicle must occupy a marked fire lane", prompt)
         self.assertIn("bbox_normalized_xyxy", prompt)
 
+    def test_prompt_templates_every_behavior_candidate_and_full_confirmed_shape(
+        self,
+    ) -> None:
+        summary = make_summary().model_copy(
+            update={
+                "behavior_classes": [
+                    BehaviorClassSummary(
+                        class_id=0,
+                        class_name="trampling_grass",
+                        required_object_classes=["person", "grass"],
+                    )
+                ],
+                "behavior_candidates": [
+                    BehaviorCandidate(
+                        id="behavior-candidate-0001",
+                        class_id=0,
+                        class_name="trampling_grass",
+                        evidence_observation_ids=["obs-0001"],
+                        evidence_class_names=["person", "grass"],
+                    )
+                ],
+            }
+        )
+
+        prompt = build_review_prompt(summary, CATALOG)
+        template = prompt_output_template(prompt)
+
+        self.assertEqual(
+            template["behavior_reviews"][0]["candidate_id"],
+            "behavior-candidate-0001",
+        )
+        self.assertIn("每个 candidate_id 必须在 behavior_reviews 中恰好出现一次", prompt)
+        self.assertIn('"bbox_normalized_xyxy":[0.15,0.08,0.84,0.95]', prompt)
+        self.assertIn("Detector outputs are visual proposals, not ground truth", prompt)
+        self.assertIn("塑料饮料瓶", prompt)
+
     def test_empty_required_reviews_still_parse_findings_and_behaviors(self) -> None:
         summary = make_summary().model_copy(
             update={
@@ -815,7 +851,7 @@ class VLMReviewTests(unittest.TestCase):
         self.assertEqual(parsed.decisions[0].corrected_class_name, "speaker")
         self.assertEqual(parsed.issues, [])
 
-    def test_empty_behavior_reviews_is_valid_even_with_candidates(self) -> None:
+    def test_empty_behavior_reviews_reports_missing_candidate_decision(self) -> None:
         summary = make_summary().model_copy(
             update={
                 "behavior_classes": [
@@ -847,7 +883,146 @@ class VLMReviewTests(unittest.TestCase):
         parsed = parse_review_response(content, summary, CATALOG)
 
         self.assertEqual(parsed.behaviors, [])
-        self.assertEqual(parsed.issues, [])
+        self.assertEqual(
+            [issue.code for issue in parsed.issues],
+            ["missing_candidate_decision"],
+        )
+        self.assertEqual(
+            parsed.issues[0].candidate_id,
+            "behavior-candidate-0001",
+        )
+
+    def test_missing_behavior_section_reports_missing_section(self) -> None:
+        summary = make_summary().model_copy(
+            update={
+                "behavior_classes": [
+                    BehaviorClassSummary(class_id=0, class_name="trampling_grass")
+                ],
+                "behavior_candidates": [
+                    BehaviorCandidate(
+                        id="behavior-candidate-0001",
+                        class_id=0,
+                        class_name="trampling_grass",
+                        evidence_observation_ids=["obs-0001"],
+                        evidence_class_names=["person", "grass"],
+                    )
+                ],
+            }
+        )
+
+        parsed = parse_review_response(
+            json.dumps(
+                {
+                    "yolo_reviews": [
+                        {"observation_id": "obs-0001", "verdict": "confirmed"}
+                    ],
+                    "new_findings": [],
+                }
+            ),
+            summary,
+            CATALOG,
+        )
+
+        self.assertIn("missing_section", [issue.code for issue in parsed.issues])
+
+    def test_partial_and_duplicate_behavior_candidate_decisions_are_reported(
+        self,
+    ) -> None:
+        candidates = [
+            BehaviorCandidate(
+                id=f"behavior-candidate-{index:04d}",
+                class_id=index - 1,
+                class_name=class_name,
+                evidence_observation_ids=["obs-0001"],
+                evidence_class_names=["person"],
+            )
+            for index, class_name in enumerate(
+                ("trampling_grass", "smoking"),
+                1,
+            )
+        ]
+        summary = make_summary().model_copy(
+            update={
+                "behavior_classes": [
+                    BehaviorClassSummary(class_id=0, class_name="trampling_grass"),
+                    BehaviorClassSummary(class_id=1, class_name="smoking"),
+                ],
+                "behavior_candidates": candidates,
+            }
+        )
+        decision = {
+            "candidate_id": "behavior-candidate-0001",
+            "class_name": "trampling_grass",
+            "verdict": "rejected",
+            "reasoning": "person is beside the grass",
+        }
+
+        parsed = parse_review_response(
+            json.dumps(
+                {
+                    "yolo_reviews": [
+                        {"observation_id": "obs-0001", "verdict": "confirmed"}
+                    ],
+                    "new_findings": [],
+                    "behavior_reviews": [decision, decision],
+                }
+            ),
+            summary,
+            CATALOG,
+        )
+
+        codes = [issue.code for issue in parsed.issues]
+        self.assertIn("duplicate_candidate_decision", codes)
+        self.assertIn("missing_candidate_decision", codes)
+        missing = next(
+            issue for issue in parsed.issues if issue.code == "missing_candidate_decision"
+        )
+        self.assertEqual(missing.candidate_id, "behavior-candidate-0002")
+
+    def test_active_scan_parses_each_canonical_behavior_without_candidates(self) -> None:
+        classes = (
+            "trampling_grass",
+            "smoking",
+            "blocking_fire_lane",
+            "standing_or_lying_on_bench",
+        )
+        summary = make_summary().model_copy(
+            update={
+                "behavior_classes": [
+                    BehaviorClassSummary(class_id=index, class_name=class_name)
+                    for index, class_name in enumerate(classes)
+                ]
+            }
+        )
+
+        for class_name in classes:
+            with self.subTest(class_name=class_name):
+                parsed = parse_review_response(
+                    json.dumps(
+                        {
+                            "yolo_reviews": [
+                                {
+                                    "observation_id": "obs-0001",
+                                    "verdict": "confirmed",
+                                }
+                            ],
+                            "new_findings": [],
+                            "behavior_reviews": [
+                                {
+                                    "class_name": class_name,
+                                    "verdict": "confirmed",
+                                    "confidence": 0.9,
+                                    "bbox_normalized_xyxy": [0.1, 0.1, 0.8, 0.9],
+                                    "reasoning": "clear visual evidence",
+                                }
+                            ],
+                        }
+                    ),
+                    summary,
+                    CATALOG,
+                )
+                self.assertEqual(parsed.behaviors[0].class_name, class_name)
+                self.assertEqual(parsed.issues, [])
 
     def test_qwen_provider_sends_original_image_and_parses_response(self) -> None:
         settings = ReviewProviderSettings(

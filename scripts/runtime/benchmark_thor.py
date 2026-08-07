@@ -216,21 +216,12 @@ def main(argv: list[str] | None = None) -> int:
             "crop_count",
         )
     }
-    total_summary = summary["total_ms"]
-    assert total_summary is not None
-    passed = (
-        all_vlm_completed
-        and all_non_degraded
-        and total_summary["median"] < 10_000.0
-    )
+    passed = all_vlm_completed and all_non_degraded
     report = {
-        "performance_passed": passed,
+        "validation_passed": passed,
         "criteria": {
             "all_vlm_completed": all_vlm_completed,
             "all_non_degraded": all_non_degraded,
-            "warm_median_under_10000_ms": (
-                total_summary["median"] < 10_000.0
-            ),
         },
         "model_initialization_ms": initialization_ms,
         "warmup_runs": warmups,

@@ -2,6 +2,17 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-08-03 Behavior 输出协议修复与 Qwen2.5-VL-32B 切换
+
+- Prompt 为每个 behavior candidate 提供一条明确 decision 槽，并加入 confirmed 完整 bbox 示例、四类行为判据和 spray_can 强约束；仍保持每图一次 Multi-Image 请求。
+- Parser 新增 `missing_section`、`missing_candidate_decision` 和 `duplicate_candidate_decision` 可观测 issue；单项错误继续按逐项容错处理。
+- confirmed behavior 缺失/非法 bbox 继续被 geometry normalization 拒绝，不进入 Fusion、Preview 或 Competition behaviors。
+- 正式 example 与 Mac local 配置切换为 `qwen-vl-32b`：300 秒总安全上限、180 秒 VLM timeout、1024 最长边、JPEG quality 90、最多 5 crops、1200 max tokens。
+- 正式 8 类禁带品与完整行为辅助 vocabulary 保留；vehicle prompts 删除 `parking`，改用实体导向的 `parked vehicle`。
+- Fusion 和 Competition Adapter 未修改；现有 verdict 语义与 behavior 映射测试已覆盖。
+
+验证结果：全部 Runtime `unittest` 140 项通过，`compileall` 与 `git diff --check` 通过；32B example 与 gitignored local 配置均通过 config validation。未调用真实 YOLO/Qwen、未安装依赖、未 commit 或 push。
+
 ## 2026-07-25 Behavior 主动扫描与 VLM Review 加固
 
 - 保留四类正式行为和原有 object-based candidates；behavior enabled 时，无 candidate 也继续通过同一次 Multi-Image VLM 请求主动扫描四类行为。

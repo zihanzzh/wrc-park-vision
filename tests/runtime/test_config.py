@@ -414,15 +414,17 @@ modules:
             behavior_prompts,
             {
                 "person": ["person", "people", "human", "pedestrian"],
-                "bench": ["bench", "park bench", "seat"],
+                "bench": ["bench", "park bench", "public bench", "seat"],
                 "grass": ["grass", "lawn", "turf", "green area"],
                 "cigarette": [
                     "cigarette",
-                    "smoker",
-                    "smoking",
+                    "lit cigarette",
                     "cigarette smoke",
+                    "smoking person",
+                    "person smoking",
+                    "smoker",
                 ],
-                "vehicle": ["vehicle", "car", "truck", "bus", "parking"],
+                "vehicle": ["vehicle", "car", "truck", "bus", "parked vehicle"],
             },
         )
         self.assertTrue(config.behavior.require_bbox)
@@ -618,14 +620,34 @@ review:
                         validate_model_paths=False,
                     )
                     self.assertTrue(config.review.require_finding_bbox)
-                    self.assertEqual(config.review.multi_image.timeout_seconds, 8)
-                    self.assertEqual(config.review.multi_image.max_tokens, 700)
-                    self.assertEqual(config.review.important_crops.max_crops, 3)
+                    self.assertEqual(config.runtime.execution, "sequential")
+                    self.assertEqual(config.runtime.total_timeout_seconds, 300)
+                    self.assertEqual(
+                        config.review.reserve_seconds_for_fusion_and_output,
+                        2.0,
+                    )
+                    self.assertEqual(config.review.multi_image.timeout_seconds, 180)
+                    self.assertEqual(config.review.multi_image.max_tokens, 1200)
+                    self.assertEqual(config.review.important_crops.max_crops, 5)
                     self.assertEqual(config.review.important_crops.context_scale, 2.0)
+                    self.assertEqual(config.review.important_crops.min_crop_size_ratio, 0.12)
                     self.assertEqual(
                         config.review.important_crops.merge_iou_threshold,
                         0.20,
                     )
+                    self.assertEqual(config.review.important_crops.skip_crop_area_ratio, 0.90)
+                    self.assertTrue(config.review.provider.enabled)
+                    self.assertEqual(
+                        config.review.provider.endpoint,
+                        "http://127.0.0.1:8000/v1/chat/completions",
+                    )
+                    self.assertEqual(config.review.provider.model_id, "qwen-vl-32b")
+                    self.assertIsNone(config.review.provider.api_key_env)
+                    self.assertEqual(config.review.provider.timeout_seconds, 180)
+                    self.assertEqual(config.review.provider.max_tokens, 1200)
+                    self.assertEqual(config.review.provider.image_max_side, 1024)
+                    self.assertEqual(config.review.provider.jpeg_quality, 90)
+                    self.assertTrue(config.review.provider.response_format_json_object)
                     self.assertEqual(config.fusion.finding_iou_threshold, 0.65)
 
     def test_v2_dual_pass_config_migrates_to_one_v3_request(self) -> None:

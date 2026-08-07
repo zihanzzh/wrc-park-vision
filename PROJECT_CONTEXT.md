@@ -17,7 +17,7 @@
 - 两个已训练 detector 已在 macOS 和 NVIDIA Thor 上完成 Runtime 实际运行验证。
 - 当前共享 Runtime V3 已形成 Detection -> Detection Summary -> 重点候选与 crops -> 单次多图 Review -> Fusion -> Output 链路。
 - 准备 NVIDIA Jetson AGX Thor Developer Kit 的多模型部署和 TensorRT 验证。
-- 在 Thor 上复测真实 Qwen2.5-VL 单次多图链路，并验证非降级 warm-run 是否稳定低于 10 秒。
+- 在 Thor 上切换并复测 Qwen2.5-VL-32B 单次多图链路，优先验证物体冲突裁决、四类行为和输出协议准确性。
 
 不文明行为尚未形成独立训练数据集和专用模型；当前已实现单图 Behavior Pipeline，使用 YOLO-World 基础对象、配置化候选规则和同一次多图 Qwen Review 共同判断四类行为。
 
@@ -53,7 +53,7 @@
 - Fusion 或 Review 失败不会删除成功模块的 observations；结果保留并以 `partial_success` 和阶段错误返回。
 - `Observation.track_id` 已预留且单图流程默认为 `null`；Tracking 和多帧融合尚未实现。
 - detector 执行支持 sequential / parallel 配置，默认 sequential；Runtime 分别记录模型初始化、detection wall time、候选、crop、VLM 请求链路、Fusion、Competition adapter、序列化和 Preview 耗时。
-- 已实现请求级 10 秒总预算：VLM timeout 受剩余预算约束，失败时 required observations 按策略降级；这只是安全保护，不能替代真实 VLM 完成后的 Thor 性能验收。
+- 正式配置采用 300 秒请求安全上限与 180 秒 VLM timeout；10 秒性能目标已取消，失败时 required observations 仍按现有策略降级。
 - 已新增独立 Competition SDK Response V1 adapter，保留完整内部 RuntimeResult；官方机器人 SDK 字段和坐标协议仍待确认。
 - Behavior 的单图语义链路已实现；多帧、tracking、pose/区域关系增强和 TensorRT 仍是后续扩展。Qwen 旧单图 Review 已在 Thor 跑通，Runtime V3 单次多图链路尚待真实 VLM 服务复测。
 
@@ -78,7 +78,7 @@ Mac 已清理早期 `data/`、`datasets_raw/`、`datasets_stage/`、`datasets_cl
 
 - Mac：主开发机，负责 Codex、代码、共享 Runtime Pipeline、GitHub、Obsidian/wiki 和轻量调试。
 - 3090 Linux 工作站：保存最终数据，按顺序训练两个 YOLO11m，保存 runs / best.pt，并在需要时运行 Qwen / VLM。
-- NVIDIA Jetson AGX Thor Developer Kit：最终边缘部署目标，负责加载多个 TensorRT engine、性能 benchmark、10 秒预算验证和机器人联调。
+- NVIDIA Jetson AGX Thor Developer Kit：最终边缘部署目标，负责加载多个 TensorRT engine、Qwen2.5-VL-32B、accuracy-first 验证和机器人联调。
 - Orange Pi / RK3588：历史备选或测试路线，不是当前主线。
 
 ## 当前边界

@@ -263,6 +263,18 @@
 - 定位：当前 example 配置要求 confirmed behavior 返回相对原图的 normalized bbox；Pipeline 校验并映射为最终 behavior observation geometry。该字段是 Runtime schema 的向后兼容扩展，Competition Response V1 不新增字段。
 - 融合：VLM 对必审 detector observation 的明确 `rejected` / `corrected` 优先于 detector 语义，原检测仍保留在 Detection Summary 与 FusionDecision 中供审计。VLM behavior finding 只在 `confirmed` 时进入最终 observations。
 
+### D044：Behavior candidate 使用完整 decision 覆盖协议
+
+- 日期：2026-08-03
+- 决策：存在 behavior candidates 时，`behavior_reviews` 必须为每个 candidate 恰好返回一条 `confirmed` / `rejected` / `uncertain` decision。缺 section、空数组、部分覆盖和重复 candidate 均记录结构化 issue。
+- 定位：confirmed behavior 必须提供相对原图的 normalized bbox；缺失或非法 geometry 不进入最终 behavior observation。无 candidate 时仍在同一次请求中主动扫描四类行为。
+
+### D045：正式 VLM 切换为 Qwen2.5-VL-32B accuracy-first
+
+- 日期：2026-08-03
+- 决策：正式 alias 为可配置的 `qwen-vl-32b`，每张图片保持一次 Multi-Image 请求。10 秒正式目标取消，D011/D042 的固定性能验收被本决策替代。
+- 配置：总安全上限 300 秒，VLM timeout 180 秒，最长边 1024、JPEG quality 90、最多 5 crops、max tokens 1200；耗时继续记录但不作为固定阈值验收。
+
 ## 被替代的历史方案
 
 - 早期 YOLO11n 环境验证：已完成，仅保留历史意义。

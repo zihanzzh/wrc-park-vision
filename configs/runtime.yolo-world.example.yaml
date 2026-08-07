@@ -1,6 +1,7 @@
 runtime:
   execution: sequential
-  total_timeout_seconds: 10.0
+  # accuracy-first 安全上限，不是性能目标。
+  total_timeout_seconds: 300
   output_dir: runtime_outputs/yolo_world
 
 modules:
@@ -17,7 +18,7 @@ modules:
         class_name: spray_can
         prompts: [spray can, aerosol can]
         visual_description: "带喷嘴或喷头的加压气雾罐。"
-        distinguishing_rules: ["普通饮料罐不是 spray_can。"]
+        distinguishing_rules: ["必须看见金属加压罐体和喷嘴/按压喷头；塑料饮料瓶、纸盒、食品容器和普通包装都不是 spray_can。"]
       - task_group: prohibited_items
         class_id: 1
         class_name: portable_gas_stove
@@ -69,7 +70,7 @@ modules:
       - task_group: uncivilized_behavior
         class_id: 1
         class_name: bench
-        prompts: [bench, park bench, seat]
+        prompts: [bench, park bench, public bench, seat]
         visual_description: "供人坐卧的长条座面，通常有支腿或靠背。"
       - task_group: uncivilized_behavior
         class_id: 2
@@ -80,13 +81,13 @@ modules:
       - task_group: uncivilized_behavior
         class_id: 3
         class_name: cigarette
-        prompts: [cigarette, smoker, smoking, cigarette smoke]
+        prompts: [cigarette, lit cigarette, cigarette smoke, smoking person, person smoking, smoker]
         visual_description: "细小柱状香烟，可见滤嘴或燃烧端。"
         distinguishing_rules: ["香烟盒不是单支 cigarette。"]
       - task_group: uncivilized_behavior
         class_id: 4
         class_name: vehicle
-        prompts: [vehicle, car, truck, bus, parking]
+        prompts: [vehicle, car, truck, bus, parked vehicle]
         visual_description: "可载人或货物的车辆主体，可见车身和车轮。"
     device: auto
     confidence: 0.10
@@ -147,7 +148,7 @@ review:
   review_cross_task_overlap: true
   review_module_failure: true
   require_finding_bbox: true
-  reserve_seconds_for_fusion_and_output: 0.75
+  reserve_seconds_for_fusion_and_output: 2.0
   candidate_selection:
     include_low_confidence: true
     include_cross_model_conflicts: true
@@ -157,26 +158,26 @@ review:
   important_crops:
     enabled: true
     context_scale: 2.0
-    min_crop_size_ratio: 0.18
+    min_crop_size_ratio: 0.12
     merge_iou_threshold: 0.20
-    max_crops: 3
-    skip_crop_area_ratio: 0.80
+    max_crops: 5
+    skip_crop_area_ratio: 0.90
   multi_image:
     enabled: true
-    timeout_seconds: 8
-    max_tokens: 700
+    timeout_seconds: 180
+    max_tokens: 1200
   provider:
-    enabled: false
+    enabled: true
     type: qwen2_5_vl
-    endpoint: null
-    model_id: null
-    api_key_env: WRC_VLM_API_KEY
-    timeout_seconds: 8
-    max_tokens: 700
+    endpoint: http://127.0.0.1:8000/v1/chat/completions
+    model_id: qwen-vl-32b
+    api_key_env: null
+    timeout_seconds: 180
+    max_tokens: 1200
     temperature: 0
-    image_max_side: 640
-    jpeg_quality: 85
-    response_format_json_object: false
+    image_max_side: 1024
+    jpeg_quality: 90
+    response_format_json_object: true
 
 fusion:
   finding_iou_threshold: 0.65

@@ -427,7 +427,18 @@ def parse_review_response(
     behaviors: list[VLMBehaviorDecision] = []
     reviewed_candidate_ids: set[str] = set()
     confirmed_classes: set[str] = set()
-    for index, value in enumerate(_section_items(payload, "behavior_reviews", issues)):
+    behavior_section_present = "behavior_reviews" in payload
+    if candidates and not behavior_section_present:
+        issues.append(
+            ReviewIssue(
+                section="behavior_reviews",
+                code="missing_section",
+                message="response is missing required behavior_reviews section",
+                review_pass=review_pass,
+            )
+        )
+    behavior_items = _section_items(payload, "behavior_reviews", issues)
+    for index, value in enumerate(behavior_items):
         try:
             item = _RawBehaviorDecision.model_validate(value)
         except ValidationError as exc:
@@ -472,7 +483,7 @@ def parse_review_response(
                 _item_issue(
                     "behavior_reviews",
                     index,
-                    "duplicate_candidate",
+                    "duplicate_candidate_decision",
                     f"duplicate behavior candidate_id: {item.candidate_id}",
                     candidate_id=item.candidate_id,
                     review_pass=review_pass,
@@ -578,6 +589,17 @@ def parse_review_response(
         if item.candidate_id is not None:
             reviewed_candidate_ids.add(item.candidate_id)
         behaviors.append(decision)
+    for candidate_id in candidates:
+        if candidate_id not in reviewed_candidate_ids:
+            issues.append(
+                ReviewIssue(
+                    section="behavior_reviews",
+                    code="missing_candidate_decision",
+                    message=f"missing decision for behavior candidate_id: {candidate_id}",
+                    candidate_id=candidate_id,
+                    review_pass=review_pass,
+                )
+            )
     return ParsedReviewResponse(
         decisions=decisions,
         findings=findings,

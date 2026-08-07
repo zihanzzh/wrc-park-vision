@@ -148,6 +148,43 @@ class FusionTests(unittest.TestCase):
         self.assertEqual(fusion.decisions[0].original_class_name, "spray_can")
         self.assertEqual(fusion.decisions[0].vlm_confidence, 0.94)
 
+    def test_spray_can_corrected_to_garbage_reuses_detector_bbox(self) -> None:
+        observations = merge_and_mark_conflicts(
+            [
+                make_observation(
+                    "prohibited_items",
+                    "yolo_world",
+                    0,
+                    "spray_can",
+                    0.60,
+                    (10, 10, 50, 70),
+                )
+            ],
+            0.75,
+        )
+        original_bbox = observations[0].geometry.bbox_xyxy
+        review = ReviewSummary(
+            attempted=True,
+            status="completed",
+            decisions=[
+                VLMReviewDecision(
+                    observation_id="obs-0001",
+                    verdict="corrected",
+                    corrected_task_group="garbage",
+                    corrected_class_id=3,
+                    corrected_class_name="plastic_drink_bottle",
+                    confidence=0.95,
+                )
+            ],
+        )
+
+        finalized, fusion = fuse_review_results(observations, review)
+
+        self.assertEqual(finalized[0].task_group, "garbage")
+        self.assertEqual(finalized[0].class_name, "plastic_drink_bottle")
+        self.assertEqual(finalized[0].geometry.bbox_xyxy, original_bbox)
+        self.assertEqual(fusion.decisions[0].action, "correct_yolo")
+
     def test_uncertain_is_kept_and_flagged_by_default(self) -> None:
         observations = merge_and_mark_conflicts(
             [make_observation("garbage", "garbage", 0, "paper", 0.4, (10, 10, 30, 30))],

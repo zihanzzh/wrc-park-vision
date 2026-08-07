@@ -46,7 +46,7 @@
 - 部署共享 Runtime Pipeline。
 - 加载 prohibited_items、garbage 和后续 behavior module 的多个 TensorRT engine。
 - 进行串行/并行策略、显存、功耗和延迟 benchmark。
-- 验证完整链路能否在 10 秒内返回或降级。
+- 部署并验证 Qwen2.5-VL-32B 的单次 Multi-Image Review、行为协议与冲突裁决。
 - 最终连接机器人图片输入与结果输出接口。
 
 当前状态：
@@ -59,9 +59,8 @@
 
 - 3090 负责训练产生 PyTorch best.pt。
 - TensorRT engine 应在 Thor 实际环境中导出、构建或至少实机验证。
-- 不声称多个模型一定满足 10 秒，必须 benchmark。
-- YOLO 预计不是主要延迟瓶颈，VLM 更可能影响总时延，但最终以 profiling 为准。
-- benchmark 后再决定模型串行/并行、模型尺寸、精度模式和 VLM 触发策略。
+- accuracy-first 验证要求 VLM 完成、结果非 degraded，并人工核对物体与四类行为结果。
+- timing 继续 profiling，但不再使用固定 10 秒阈值决定模型或触发策略。
 
 ## 最终交付包
 
@@ -89,6 +88,6 @@
 Mac 开发共享 Runtime 与文档
   -> 3090 顺序训练两个 YOLO11m
   -> Thor 构建/验证多个 TensorRT engine
-  -> Thor benchmark 与 10 秒预算验证
+  -> Thor Qwen2.5-VL-32B accuracy-first 验证
   -> 机器人联调和部署包交付
 ```
