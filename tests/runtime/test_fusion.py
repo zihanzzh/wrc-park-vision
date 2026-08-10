@@ -122,7 +122,7 @@ class FusionTests(unittest.TestCase):
                     "yolo_world",
                     0,
                     "spray_can",
-                    0.60,
+                    0.96,
                     (10, 10, 50, 70),
                 )
             ],
@@ -147,6 +147,117 @@ class FusionTests(unittest.TestCase):
         self.assertEqual(fusion.decisions[0].action, "reject_yolo")
         self.assertEqual(fusion.decisions[0].original_class_name, "spray_can")
         self.assertEqual(fusion.decisions[0].vlm_confidence, 0.94)
+
+    def test_high_confidence_paper_ball_false_positive_is_not_final(self) -> None:
+        observations = merge_and_mark_conflicts(
+            [
+                make_observation(
+                    "garbage",
+                    "garbage",
+                    0,
+                    "crumpled_paper_ball",
+                    0.97,
+                    (10, 10, 50, 70),
+                )
+            ],
+            0.75,
+        )
+        observations[0].review.required = True
+        review = ReviewSummary(
+            attempted=True,
+            status="completed",
+            decisions=[
+                VLMReviewDecision(
+                    observation_id="obs-0001",
+                    verdict="rejected",
+                    confidence=0.99,
+                    reasoning="visible region is grass texture, not paper",
+                )
+            ],
+        )
+
+        finalized, fusion = fuse_review_results(observations, review)
+
+        self.assertEqual(finalized, [])
+        self.assertEqual(fusion.decisions[0].action, "reject_yolo")
+        self.assertEqual(
+            fusion.decisions[0].original_class_name,
+            "crumpled_paper_ball",
+        )
+
+    def test_garbage_correction_reuses_high_confidence_detector_bbox(self) -> None:
+        observations = merge_and_mark_conflicts(
+            [
+                make_observation(
+                    "garbage",
+                    "garbage",
+                    0,
+                    "crumpled_paper_ball",
+                    0.97,
+                    (10, 10, 50, 70),
+                )
+            ],
+            0.75,
+        )
+        original_bbox = observations[0].geometry.bbox_xyxy
+        review = ReviewSummary(
+            attempted=True,
+            status="completed",
+            decisions=[
+                VLMReviewDecision(
+                    observation_id="obs-0001",
+                    verdict="corrected",
+                    corrected_task_group="garbage",
+                    corrected_class_id=4,
+                    corrected_class_name="plastic_food_wrapper",
+                    confidence=0.95,
+                )
+            ],
+        )
+
+        finalized, fusion = fuse_review_results(observations, review)
+
+        self.assertEqual(finalized[0].task_group, "garbage")
+        self.assertEqual(finalized[0].class_name, "plastic_food_wrapper")
+        self.assertEqual(finalized[0].geometry.bbox_xyxy, original_bbox)
+        self.assertEqual(fusion.decisions[0].action, "correct_yolo")
+
+    def test_prohibited_correction_reuses_high_confidence_detector_bbox(self) -> None:
+        observations = merge_and_mark_conflicts(
+            [
+                make_observation(
+                    "prohibited_items",
+                    "yolo_world",
+                    3,
+                    "skateboard",
+                    0.96,
+                    (10, 10, 50, 70),
+                )
+            ],
+            0.75,
+        )
+        original_bbox = observations[0].geometry.bbox_xyxy
+        review = ReviewSummary(
+            attempted=True,
+            status="completed",
+            decisions=[
+                VLMReviewDecision(
+                    observation_id="obs-0001",
+                    verdict="corrected",
+                    corrected_task_group="prohibited_items",
+                    corrected_class_id=4,
+                    corrected_class_name="kick_scooter",
+                    confidence=0.95,
+                )
+            ],
+        )
+
+        finalized, fusion = fuse_review_results(observations, review)
+
+        self.assertEqual(finalized[0].task_group, "prohibited_items")
+        self.assertEqual(finalized[0].class_name, "kick_scooter")
+        self.assertEqual(finalized[0].geometry.bbox_xyxy, original_bbox)
+        self.assertEqual(fusion.decisions[0].action, "correct_yolo")
 
     def test_spray_can_corrected_to_garbage_reuses_detector_bbox(self) -> None:
         observations = merge_and_mark_conflicts(

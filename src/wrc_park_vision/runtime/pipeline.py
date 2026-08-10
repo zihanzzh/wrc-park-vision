@@ -156,17 +156,25 @@ def build_visual_class_guide(
 ) -> dict[str, dict[str, dict[str, object]]]:
     guide: dict[str, dict[str, dict[str, object]]] = {}
     for settings in config.modules:
-        if not settings.enabled or not settings.open_vocabulary_classes:
+        if not settings.enabled:
             continue
-        for item in settings.open_vocabulary_classes:
-            if item.visual_description is None and not item.distinguishing_rules:
-                continue
-            details: dict[str, object] = {}
-            if item.visual_description is not None:
-                details["visual"] = item.visual_description
-            if item.distinguishing_rules:
-                details["distinguish"] = list(item.distinguishing_rules)
-            guide.setdefault(item.task_group, {})[item.class_name] = details
+        if settings.open_vocabulary_classes:
+            for item in settings.open_vocabulary_classes:
+                if item.visual_description is None and not item.distinguishing_rules:
+                    continue
+                details: dict[str, object] = {}
+                if item.visual_description is not None:
+                    details["visual"] = item.visual_description
+                if item.distinguishing_rules:
+                    details["distinguish"] = list(item.distinguishing_rules)
+                guide.setdefault(item.task_group, {})[item.class_name] = details
+        for class_name, guidance in settings.visual_class_guidance.items():
+            details = {}
+            if guidance.visual_description is not None:
+                details["visual"] = guidance.visual_description
+            if guidance.distinguishing_rules:
+                details["distinguish"] = list(guidance.distinguishing_rules)
+            guide.setdefault(settings.task_group, {})[class_name] = details
     return guide
 
 

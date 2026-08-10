@@ -168,6 +168,12 @@ class PipelineTests(unittest.TestCase):
                             "plastic_food_wrapper",
                             "rigid_takeout_bag",
                         ],
+                        "visual_class_guidance": {
+                            "crumpled_paper_ball": {
+                                "visual_description": "可见纸质折皱和不规则团状结构。",
+                                "distinguishing_rules": ["草地纹理不是纸团。"],
+                            }
+                        },
                     },
                 ]
             }
@@ -224,9 +230,114 @@ class PipelineTests(unittest.TestCase):
                         "visual": "带喷头的气雾罐。",
                         "distinguish": ["普通饮料罐不是喷雾罐。"],
                     }
-                }
+                },
+                "garbage": {
+                    "crumpled_paper_ball": {
+                        "visual": "可见纸质折皱和不规则团状结构。",
+                        "distinguish": ["草地纹理不是纸团。"],
+                    }
+                },
             },
         )
+
+    def test_accuracy_policy_rejects_high_confidence_objects_in_one_request(self) -> None:
+        class RejectingProvider(ReviewProvider):
+            def __init__(self) -> None:
+                self.calls = 0
+                self.required_task_groups = set()
+
+            def review(self, image, summary):
+                raise AssertionError("V3 pipeline must use review_multi_image")
+
+            def review_multi_image(self, request):
+                self.calls += 1
+                required_ids = set(request.required_review_observation_ids)
+                self.required_task_groups = {
+                    detection.task_group
+                    for detection in request.summary.detections
+                    if detection.observation_id in required_ids
+                }
+                return VLMReviewResult(
+                    provider="fake_vlm",
+                    model_id="qwen-vl",
+                    duration_ms=1,
+                    review_pass="multi_image",
+                    decisions=[
+                        VLMReviewDecision(
+                            observation_id=observation_id,
+                            verdict="rejected",
+                            confidence=0.99,
+                        )
+                        for observation_id in request.required_review_observation_ids
+                    ],
+                )
+
+        config = make_config(
+            ("garbage", "prohibited_items", "uncivilized_behavior")
+        )
+        config.review.candidate_selection.review_all_task_groups = [
+            "garbage",
+            "prohibited_items",
+        ]
+        provider = RejectingProvider()
+        modules = [
+            DetectionModule(
+                "garbage",
+                "garbage",
+                "garbage",
+                FakeBackend(
+                    "garbage",
+                    [
+                        BackendDetection(
+                            0,
+                            "crumpled_paper_ball",
+                            0.97,
+                            (10, 10, 40, 40),
+                        )
+                    ],
+                ),
+            ),
+            DetectionModule(
+                "prohibited_items",
+                "prohibited_items",
+                "world",
+                FakeBackend(
+                    "world",
+                    [BackendDetection(0, "spray_can", 0.96, (50, 10, 80, 40))],
+                ),
+            ),
+            DetectionModule(
+                "uncivilized_behavior",
+                "uncivilized_behavior",
+                "world",
+                FakeBackend(
+                    "world",
+                    [BackendDetection(0, "person", 0.99, (10, 45, 90, 75))],
+                ),
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as directory:
+            response = RuntimePipeline(
+                config,
+                modules,
+                review_provider=provider,
+            ).process(write_test_image(Path(directory) / "image.jpg"))
+
+        self.assertEqual(provider.calls, 1)
+        self.assertEqual(
+            provider.required_task_groups,
+            {"garbage", "prohibited_items"},
+        )
+        self.assertEqual(
+            [(item.task_group, item.class_name) for item in response.observations],
+            [("uncivilized_behavior", "person")],
+        )
+        self.assertEqual(response.fusion.decisions[0].action, "reject_yolo")
+        self.assertEqual(response.fusion.decisions[1].action, "reject_yolo")
+        self.assertEqual(response.fusion.decisions[2].action, "keep_detector_result")
+        competition = build_competition_response(response).model_dump()
+        self.assertEqual(competition["schema_version"], "1.0")
 
     def test_visual_class_guide_omits_disabled_modules(self) -> None:
         config = RuntimeConfig.model_validate(

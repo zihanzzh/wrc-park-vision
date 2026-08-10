@@ -1,5 +1,17 @@
 # Current Status
 
+## 2026-08-10 Object Review accuracy-first policy
+
+- Thor 已使用 `Qwen2.5-VL-32B-Instruct-AWQ` 跑通 person + grass detection、`trampling_grass` candidate、32B confirmation、behavior bbox、Parser、Fusion `add_behavior`、Preview 和 Competition output。
+- 真实测试发现 `crumpled_paper_ball` false positive：一个高置信 detection 未进入旧 Candidate Selector 而直接保留，另一个虽经 Review 仍被错误 confirmed。
+- `review.candidate_selection.review_all_task_groups` 当前正式配置为 `[garbage, prohibited_items]`；两组每一条 detector observation 都是 required review，不受 confidence、尺寸或 conflict 影响，并继续共用每图一次 Multi-Image 32B 请求。
+- `uncivilized_behavior` 的 person / grass / bench / cigarette / vehicle 不做无条件全量审核，继续使用低置信、小目标、冲突和 behavior candidate evidence 规则；四类行为主动全图扫描保持不变。
+- 固定类别 detector 新增配置化 `visual_class_guidance`。六类 garbage 的正向结构和 false-positive 排除规则会按本次 required classes 进入 Prompt；`crumpled_paper_ball` 明确排除草地纹理、石头、衣物、身体部位、阴影、袋子、塑料物体和背景斑块。
+- Prompt 明确 detector label/confidence 不是语义真值；每个 required detection 必须恰好返回一个 verdict。confirmed/corrected 继续复用 YOLO bbox，只有 `new_findings` 需要 VLM bbox。
+- Parser 与 Fusion 主逻辑未改：missing / duplicate required decision 继续产生明确 issue；缺项或失败按 review failure policy 标记，rejected 删除，corrected 修改 task/class 并保留 YOLO geometry。
+- Thor 实际 served model alias 为 `qwen-vl`，模型 root 为 `/models/Qwen2.5-VL-32B-Instruct-AWQ`；local YAML 继续通过 `WRC_VLM_MODEL_ID` 保留机器值，不回退 7B。
+- 自动验证：全部 Runtime `unittest` 148 项、`compileall`、`git diff --check`、两个 example 与 gitignored local 配置 validation 均通过；本轮未调用真实 YOLO/Qwen。
+
 ## 2026-08-03 当前正式方案
 
 - 正式 VLM 从 Qwen2.5-VL-7B 切换为 Qwen2.5-VL-32B，alias 为可配置的 `qwen-vl-32b`；每张图片仍只有一次 Multi-Image 请求。
@@ -11,7 +23,7 @@
 
 ## 当前阶段
 
-禁带品与垃圾两个独立 detector 已完成训练，并已在 macOS 和 NVIDIA Thor 上跑通检测链路。YOLO-World backend、单图 Behavior Pipeline 和 Qwen2.5-VL Review 已接入共享 Runtime；Thor 上已跑通旧单图 7B Review，Runtime V3 单次多图链路尚待实测。
+禁带品与垃圾两个独立 detector 已完成训练，并已在 macOS 和 NVIDIA Thor 上跑通检测链路。YOLO-World backend、单图 Behavior Pipeline 和 Qwen2.5-VL Review 已接入共享 Runtime；Thor 上已跑通 32B Runtime V3 单次多图行为链路，当前进入物体 false-positive accuracy-first 加固与复测。
 
 本轮已完成代码实现与 mock 自动测试，没有运行真实 Qwen2.5-VL、训练模型、修改数据集、安装依赖或 push。
 
@@ -55,8 +67,8 @@
 
 - V2 的 Full Image + Crop Scan 顺序双请求已从主 Pipeline 移除。
 - Qwen provider 启用时每张图片只执行一次请求，同时发送原始图片和少量重点 crops。
-- Review candidates 来自低置信、跨模型冲突、小目标和 behavior candidates；crop 围绕候选扩展、合并，最多保留 5 个，并跳过接近全图的重复 crop。
-- `yolo_reviews` 只要求覆盖 candidates 引用的 observation，重复引用会去重；未进入候选的 detection 不要求 VLM 输出 decision，完整 Detection Summary 仍用于全图理解、漏检和行为判断。
+- Review candidates 包含全部 garbage / prohibited observations，以及按低置信、跨模型冲突、小目标和 behavior candidates 选中的 behavior 基础对象；crop 围绕这些候选扩展、合并，最多保留 5 个，并跳过接近全图的重复 crop。
+- `yolo_reviews` 要求覆盖所有 candidate 引用的 observation；因此 garbage / prohibited detections 必须逐条返回 decision。未被选中的高置信 behavior 基础对象仍可直接保留，完整 Detection Summary 继续用于全图理解、漏检和行为判断。
 - 所有 VLM finding bbox 都使用原图 normalized 坐标；`crop_id` 只表示判断参考，不再执行 crop-local 坐标映射。
 - 同一次响应完成 YOLO review、漏检发现和四类行为判断，继续使用逐项容错 Parser 与现有 Fusion。
 - `review.multi_image`、`candidate_selection` 和 `important_crops` 参数均配置化；V2 配置可迁移为单次 V3 请求。

@@ -44,6 +44,7 @@ class ConfigTests(unittest.TestCase):
         )
         self.assertEqual(config.review.provider.image_max_side, 640)
         self.assertEqual(config.review.provider.jpeg_quality, 85)
+        self.assertEqual(config.review.candidate_selection.review_all_task_groups, [])
         self.assertIn("review_failed", config.preview.status_colors)
 
     def test_parallel_execution_is_explicitly_configurable(self) -> None:
@@ -636,6 +637,30 @@ review:
                         0.20,
                     )
                     self.assertEqual(config.review.important_crops.skip_crop_area_ratio, 0.90)
+                    self.assertEqual(
+                        config.review.candidate_selection.review_all_task_groups,
+                        ["garbage", "prohibited_items"],
+                    )
+                    garbage_module = next(
+                        module for module in config.modules if module.task_group == "garbage"
+                    )
+                    self.assertEqual(
+                        set(garbage_module.visual_class_guidance),
+                        {
+                            "crumpled_paper_ball",
+                            "disposable_food_container",
+                            "empty_cigarette_box",
+                            "plastic_drink_bottle",
+                            "plastic_food_wrapper",
+                            "rigid_takeout_bag",
+                        },
+                    )
+                    self.assertIn(
+                        "草地纹理",
+                        garbage_module.visual_class_guidance[
+                            "crumpled_paper_ball"
+                        ].distinguishing_rules[0],
+                    )
                     self.assertTrue(config.review.provider.enabled)
                     self.assertEqual(
                         config.review.provider.endpoint,

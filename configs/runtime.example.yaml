@@ -109,6 +109,25 @@ modules:
       - plastic_drink_bottle
       - plastic_food_wrapper
       - rigid_takeout_bag
+    visual_class_guidance:
+      crumpled_paper_ball:
+        visual_description: "纸质材料形成的不规则团状或压皱结构，可见折皱、纸边或纸面。"
+        distinguishing_rules: ["草地纹理、石头、衣物、身体部位、阴影、袋子、塑料物体和背景斑块都不是纸团；无法确认纸质时必须 uncertain 或 rejected。"]
+      disposable_food_container:
+        visual_description: "一次性餐盒、托盘或翻盖食品容器，可见塑料或纸质盒体结构。"
+        distinguishing_rules: ["不能把没有明确盒体、托盘或翻盖结构的普通物体区域确认为 food container。"]
+      empty_cigarette_box:
+        visual_description: "矩形香烟包装盒，可见翻盖烟盒轮廓或其他明确烟盒结构。"
+        distinguishing_rules: ["不能仅因为物体小且呈矩形就确认为 cigarette box。"]
+      plastic_drink_bottle:
+        visual_description: "塑料饮料瓶，可见瓶身、瓶颈、瓶盖或开口以及透明或半透明塑料外观。"
+        distinguishing_rules: ["spray_can 和盒状包装不是 plastic drink bottle。"]
+      plastic_food_wrapper:
+        visual_description: "柔软、薄且可折叠的塑料食品包装或包装膜。"
+        distinguishing_rules: ["硬盒、纸张、阴影和草地纹理不是 plastic food wrapper。"]
+      rigid_takeout_bag:
+        visual_description: "较硬挺、能保持袋形的外卖袋或手提包装结构。"
+        distinguishing_rules: ["人物、衣服、大面积背景、墙体和任意大矩形区域都不是 rigid takeout bag。"]
     device: auto
     confidence: 0.25
     iou: 0.70
@@ -154,6 +173,7 @@ review:
     include_cross_model_conflicts: true
     include_small_objects: true
     include_behavior_candidates: true
+    review_all_task_groups: [garbage, prohibited_items]
     small_object_area_ratio: 0.01
   important_crops:
     enabled: true

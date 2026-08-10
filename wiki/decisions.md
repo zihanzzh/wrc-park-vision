@@ -272,8 +272,18 @@
 ### D045：正式 VLM 切换为 Qwen2.5-VL-32B accuracy-first
 
 - 日期：2026-08-03
-- 决策：正式 alias 为可配置的 `qwen-vl-32b`，每张图片保持一次 Multi-Image 请求。10 秒正式目标取消，D011/D042 的固定性能验收被本决策替代。
+- 决策：正式 served model alias 由配置提供，每张图片保持一次 Multi-Image 请求。10 秒正式目标取消，D011/D042 的固定性能验收被本决策替代。
 - 配置：总安全上限 300 秒，VLM timeout 180 秒，最长边 1024、JPEG quality 90、最多 5 crops、max tokens 1200；耗时继续记录但不作为固定阈值验收。
+
+### D046：Garbage 与 Prohibited detections 全量进入 32B Review
+
+- 日期：2026-08-10
+- 决策：通过 `review.candidate_selection.review_all_task_groups: [garbage, prohibited_items]`，让两组所有 detector observations 成为 required review；不按 confidence、尺寸或 conflict 跳过。
+- 单请求：全量 object review、behavior evidence 和四类行为主动扫描继续合并在同一次 Multi-Image Qwen2.5-VL-32B 请求中，不增加第二次 VLM 调用。
+- Behavior 边界：`uncivilized_behavior` 基础对象不加入全量组，继续使用低置信、小目标、冲突和 behavior candidate evidence 选择。
+- 几何：confirmed / corrected 沿用 YOLO bbox；rejected 删除；uncertain 使用既有策略；只有 `new_findings` 由 VLM 提供 bbox。Fusion 与 Competition external schema 不变。
+- 完整性：每个 required observation 必须在 `yolo_reviews` 中恰好出现一次；missing / duplicate 继续记录明确 issue，缺项或失败不得伪装为审核成功。
+- Thor：正式模型为 `/models/Qwen2.5-VL-32B-Instruct-AWQ`，当前 vLLM served alias 为 `qwen-vl`；local 配置通过环境变量保留该机器值。
 
 ## 被替代的历史方案
 

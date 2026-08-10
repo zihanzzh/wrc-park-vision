@@ -17,7 +17,8 @@
 - 两个已训练 detector 已在 macOS 和 NVIDIA Thor 上完成 Runtime 实际运行验证。
 - 当前共享 Runtime V3 已形成 Detection -> Detection Summary -> 重点候选与 crops -> 单次多图 Review -> Fusion -> Output 链路。
 - 准备 NVIDIA Jetson AGX Thor Developer Kit 的多模型部署和 TensorRT 验证。
-- 在 Thor 上切换并复测 Qwen2.5-VL-32B 单次多图链路，优先验证物体冲突裁决、四类行为和输出协议准确性。
+- Thor 已使用 Qwen2.5-VL-32B 跑通 person + grass、`trampling_grass` candidate/confirmation、behavior bbox、Parser、Fusion、Preview 和 Competition output。
+- 当前 accuracy-first 重点是让所有 garbage / prohibited detector observations 经过同一次 32B Review，降低高置信 detector false positive 直接进入最终输出的风险。
 
 不文明行为尚未形成独立训练数据集和专用模型；当前已实现单图 Behavior Pipeline，使用 YOLO-World 基础对象、配置化候选规则和同一次多图 Qwen Review 共同判断四类行为。
 
@@ -47,6 +48,7 @@
 - 已实现配置驱动的单图 Behavior Pipeline：基础对象只生成候选，最终行为必须由同一次 VLM Review 确认；无候选时仍允许从原图发现明显行为。
 - 当前正式行为类别为 `trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。
 - 单次 Multi-Image Review 同时接收完整原图、紧凑 Detection Summary 和少量候选驱动 crops，完成确认、拒绝、纠正、漏检和行为判断。
+- `garbage` 与 `prohibited_items` 的每条 detector observation 均由配置要求进入该次 Review；behavior 基础对象仍使用低置信、小目标、冲突和行为证据候选策略。
 - corrected 始终复用 YOLO bbox；VLM 新 finding 必须提供相对完整原图的 normalized bbox。
 - Fusion 对同类高 IoU 结果去重，并保留来源追踪；不同类别高 IoU 结果不静默删除。
 - JSON 与 Preview 使用同一个最终 `PipelineResponse`，Preview 不重新推理或重算 bbox。

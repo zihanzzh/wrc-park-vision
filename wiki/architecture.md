@@ -13,7 +13,7 @@ Robot sends one image
   -> Run Ultralytics YOLO11m garbage module
   -> Run behavior pipeline
   -> Normalize detections and build Detection Summary
-  -> Select low-confidence, conflict, small-object and behavior candidates
+  -> Require all garbage/prohibited detections; select behavior evidence candidates
   -> Generate at most five merged important crops
   -> Qwen2.5-VL-32B reviews original image and crops in one request
   -> Fuse/deduplicate original-image-coordinate findings
@@ -29,6 +29,7 @@ Robot sends one image
 - 机器人只发送图片，不提供 `taskId`、`taskType`、`mode` 或 `category`。
 - Pipeline 根据模型来源写入 `task_group`，不依赖机器人提供任务类型。
 - Qwen / VLM 启用时每张图片只执行一次 multi-image 请求；Detection Summary 只是上下文，不是观察范围。
+- `review_all_task_groups` 当前配置为 `garbage` 与 `prohibited_items`，两组所有 detector observations 都必须在同一次请求的 `yolo_reviews` 中获得 decision；behavior 基础对象继续使用原 Candidate Selector。
 - VLM 不修改 YOLO geometry；corrected 复用 YOLO bbox。VLM 新 finding 必须返回相对原图的 normalized bbox。
 - crops 只围绕重要候选生成、合并和限量，不使用固定网格；原图和全部 crops 在同一次 HTTP 请求中发送。
 - 原始 YOLO observations、VLM findings 和最终 fusion decisions 必须同时保留。
@@ -230,11 +231,11 @@ Runtime v1 采用保守规则：
 - Detection Summary 同时包含正式行为类别和由基础对象生成的 behavior candidates。
 - Summary 只提供上下文；Qwen2.5-VL 始终接收完整原图，并额外接收少量重点 crops。
 - VLM 对每条 YOLO detection 返回 `confirmed`、`rejected`、`corrected` 或 `uncertain`。
-- Candidate Selector 从低置信、跨模型冲突、小目标和 behavior candidates 中选择重点区域。
+- Candidate Selector 通过 `review_all_task_groups` 无条件选择所有 garbage / prohibited observations，同时继续按低置信、跨模型冲突、小目标和 behavior candidates 选择 behavior 证据区域。
 - Crop Generator 围绕候选扩展上下文、合并高重叠区域并按优先级保留最多 5 个 crops；面积达到原图 90% 的 crop 不重复发送，没有候选时不虚构固定网格。
 - 单次 multi-image 响应通过 `new_findings` 报告漏检目标，并通过 `behavior_reviews` 确认或否定行为；无 candidate 时仍可从原图发现明显行为。
 - 所有 finding bbox 都相对完整原图归一化。`crop_id` 只表示帮助判断的 crop，不改变坐标系。
-- parser 分别解析 observation review、finding 和 behavior review。非法项、缺失项、重复 ID 或非法类别写入 `ReviewIssue`，合法项继续进入 Fusion；顶层响应无法解析时才整体失败。
+- parser 分别解析 observation review、finding 和 behavior review。每个 required observation 必须恰好出现一次；非法项、缺失项、重复 ID 或非法类别写入 `ReviewIssue`，合法项继续进入 Fusion；顶层响应无法解析时才整体失败。
 - provider 默认关闭，因此现有 detector-only Pipeline 继续工作；启用 provider 时每张输入图片只执行一次 HTTP 请求。
 - Thor 已验证旧单图 Review 链路；Runtime V3 的多图请求延迟、准确率和漏检收益仍需实测。
 

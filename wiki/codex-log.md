@@ -2,6 +2,18 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-08-10 Garbage / Prohibited 全量 32B Object Review
+
+- 新增向后兼容配置 `review.candidate_selection.review_all_task_groups`，正式 example 与 gitignored Thor local 配置设为 `[garbage, prohibited_items]`。
+- Candidate Selector 和 ReviewPolicy 都会把这两组所有 detector observations 标记为 `task_group_required`；confidence、目标尺寸和 conflict 不再决定是否审核。`uncivilized_behavior` 基础对象继续使用原有候选逻辑。
+- 每张图片仍只发起一次 Multi-Image Qwen2.5-VL-32B 请求；required IDs 可多于最终保留的最多 5 个 crops。
+- 固定类别 module 新增配置化 `visual_class_guidance`，六类 garbage 的可见结构与 false-positive 排除规则进入 Prompt。只要某 task group 有 required detection，该组完整类别指南都会提供给 32B，支持独立确认和清晰纠正。
+- Prompt 明确 detector label/confidence 不是语义真值，并禁止为已有 detector detection 重新输出 bbox。confirmed/corrected 继续复用 YOLO geometry；`new_findings` 仍要求原图 normalized bbox。
+- Parser required coverage 和 Fusion 主逻辑未修改；新增回归覆盖 missing/duplicate、两组高置信 rejection、garbage/prohibited correction、paper-ball false positive、behavior 非全量审核、单请求和 Competition schema 不变。
+- Thor local 配置继续使用 `WRC_VLM_MODEL_ID`，实际值应为 `qwen-vl`；没有回退 7B，也没有改写 endpoint、API key 或模型路径。
+
+验证结果：全部 Runtime `unittest` 148 项通过；`compileall`、`git diff --check`、两个 example 与 gitignored local 配置 validation 通过。未运行真实模型、未安装依赖、未 commit 或 push。
+
 ## 2026-08-03 Behavior 输出协议修复与 Qwen2.5-VL-32B 切换
 
 - Prompt 为每个 behavior candidate 提供一条明确 decision 槽，并加入 confirmed 完整 bbox 示例、四类行为判据和 spray_can 强约束；仍保持每图一次 Multi-Image 请求。

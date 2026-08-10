@@ -19,6 +19,7 @@ from .candidate_selector import normalized_bbox_area
 
 
 REASON_ORDER = (
+    "task_group_required",
     "low_confidence",
     "cross_model_overlap",
     "small_object",
@@ -42,6 +43,8 @@ class ReviewPolicy:
         selection = self.settings.candidate_selection
         for observation in reviewed:
             reasons: list[str] = []
+            if observation.task_group in selection.review_all_task_groups:
+                reasons.append("task_group_required")
             if (
                 selection.include_low_confidence
                 and observation.confidence < self.settings.low_confidence_threshold

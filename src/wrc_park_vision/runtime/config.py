@@ -73,6 +73,23 @@ class OpenVocabularyClassSettings(BaseModel):
         return self
 
 
+class VisualClassGuidanceSettings(BaseModel):
+    visual_description: Optional[str] = None
+    distinguishing_rules: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_guidance(self) -> "VisualClassGuidanceSettings":
+        if self.visual_description is not None and not self.visual_description.strip():
+            raise ValueError("visual_description must not be blank")
+        if any(not rule.strip() for rule in self.distinguishing_rules):
+            raise ValueError("distinguishing_rules must not contain blank rules")
+        if len(self.distinguishing_rules) != len(set(self.distinguishing_rules)):
+            raise ValueError("distinguishing_rules must not contain duplicates")
+        if self.visual_description is None and not self.distinguishing_rules:
+            raise ValueError("visual class guidance must contain visual_description or rules")
+        return self
+
+
 class ModuleSettings(BaseModel):
     id: str = Field(min_length=1)
     enabled: bool = True
@@ -83,6 +100,9 @@ class ModuleSettings(BaseModel):
     model_id: str = Field(min_length=1)
     expected_class_names: Optional[list[str]] = None
     open_vocabulary_classes: Optional[list[OpenVocabularyClassSettings]] = None
+    visual_class_guidance: dict[str, VisualClassGuidanceSettings] = Field(
+        default_factory=dict
+    )
     device: str = "auto"
     confidence: float = Field(default=0.25, ge=0.0, le=1.0)
     iou: float = Field(default=0.7, ge=0.0, le=1.0)
@@ -115,6 +135,18 @@ class ModuleSettings(BaseModel):
                 )
             if self.enabled and self.type == "detection" and not names:
                 raise ValueError(f"enabled detection module {self.id} requires non-empty expected_class_names")
+
+        if self.visual_class_guidance:
+            if names is None:
+                raise ValueError(
+                    f"module {self.id} visual_class_guidance requires expected_class_names"
+                )
+            unknown_guidance = set(self.visual_class_guidance) - set(names)
+            if unknown_guidance:
+                raise ValueError(
+                    f"module {self.id} visual_class_guidance contains unknown classes: "
+                    f"{sorted(unknown_guidance)}"
+                )
 
         if open_classes:
             pairs = [(item.task_group, item.class_name) for item in open_classes]
@@ -151,7 +183,16 @@ class CandidateSelectionSettings(BaseModel):
     include_cross_model_conflicts: bool = True
     include_small_objects: bool = True
     include_behavior_candidates: bool = True
+    review_all_task_groups: list[str] = Field(default_factory=list)
     small_object_area_ratio: float = Field(default=0.02, gt=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def validate_review_all_task_groups(self) -> "CandidateSelectionSettings":
+        if any(not task_group.strip() for task_group in self.review_all_task_groups):
+            raise ValueError("review_all_task_groups must not contain blank task groups")
+        if len(self.review_all_task_groups) != len(set(self.review_all_task_groups)):
+            raise ValueError("review_all_task_groups must not contain duplicates")
+        return self
 
 
 class ImportantCropSettings(BaseModel):

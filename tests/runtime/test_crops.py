@@ -94,6 +94,57 @@ class ReviewCropTests(unittest.TestCase):
             ("behavior-candidate-0001",),
         )
 
+    def test_review_all_task_groups_selects_high_confidence_objects_only(self) -> None:
+        garbage = make_observation(
+            "garbage",
+            "garbage",
+            0,
+            "crumpled_paper_ball",
+            0.97,
+            (10, 10, 80, 70),
+            (200, 100),
+        )
+        prohibited = make_observation(
+            "prohibited_items",
+            "world",
+            0,
+            "spray_can",
+            0.96,
+            (90, 10, 160, 70),
+            (200, 100),
+        )
+        behavior_object = make_observation(
+            "uncivilized_behavior",
+            "world",
+            0,
+            "person",
+            0.99,
+            (20, 5, 180, 95),
+            (200, 100),
+        )
+        for index, observation in enumerate(
+            (garbage, prohibited, behavior_object),
+            1,
+        ):
+            observation.id = f"obs-{index:04d}"
+
+        selected = select_review_candidates(
+            [garbage, prohibited, behavior_object],
+            [],
+            CandidateSelectionSettings(
+                review_all_task_groups=["garbage", "prohibited_items"]
+            ),
+            low_confidence_threshold=0.45,
+        )
+
+        self.assertEqual(
+            [candidate.observation_ids for candidate in selected],
+            [("obs-0001",), ("obs-0002",)],
+        )
+        self.assertTrue(
+            all("task_group_required" in candidate.reasons for candidate in selected)
+        )
+
     def test_important_crops_are_candidate_driven_not_fixed_grid(self) -> None:
         candidate = ReviewCandidate(
             candidate_id="review-candidate-0001",

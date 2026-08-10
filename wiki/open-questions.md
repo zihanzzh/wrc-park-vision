@@ -38,7 +38,7 @@
 
 ## Accuracy-first VLM 验证
 
-- Qwen2.5-VL-32B 在 Thor 上能否稳定加载，并以 `qwen-vl-32b` 暴露 OpenAI-compatible endpoint？
+- Qwen2.5-VL-32B 已在 Thor 以 `qwen-vl` alias 跑通行为链路；全量 garbage / prohibited review 后，required 数量增加时 JSON 完整性和 false-positive rejection 是否稳定？
 - 当前候选阈值、crop context scale、合并阈值和最多 5 个 crops 是否适合真实比赛图片？
 - Thor 上 1024 最长边、JPEG quality 90 对小目标和四类行为的真实准确率如何？
 - 当前 vLLM 是否确认支持 `response_format={"type":"json_object"}`，以及启用后是否改善稳定性而不增加延迟？
@@ -46,7 +46,7 @@
 - Qwen / VLM 具体运行在 3090、其他高算力设备还是 Thor？
 - 比赛现场是否允许额外设备和联网？
 - 已确认单图 Review 使用完整原图；未来 behavior 是否还需要连续多帧序列？
-- Qwen2.5-VL-32B 使用哪个准确量化版本和 vLLM 启动参数？
+- 已确认模型 root 为 `/models/Qwen2.5-VL-32B-Instruct-AWQ`；完整 vLLM 启动参数仍需记录和版本化。
 - 真实服务是否稳定遵循当前严格 JSON contract，是否需要有限重试或结构化输出约束？
 - VLM 超时后返回哪些已确认结果，机器人采取什么动作？
 - 两个 detector 全部失败但 VLM 返回 finding 时，顶层状态应为 `failure` 还是 `partial_success`？

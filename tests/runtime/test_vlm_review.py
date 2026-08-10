@@ -199,7 +199,7 @@ class VLMReviewTests(unittest.TestCase):
         self.assertNotIn("允许的 task_group", prompt)
         self.assertNotIn("允许的 class_name", prompt)
 
-    def test_visual_guide_only_includes_review_conflict_and_behavior_classes(
+    def test_visual_guide_includes_full_required_task_group_for_corrections(
         self,
     ) -> None:
         summary = DetectionSummary(
@@ -262,8 +262,9 @@ class VLMReviewTests(unittest.TestCase):
 
         self.assertIn("平板式板面下方有轮子", visual_section)
         self.assertIn("站立踏板连接直立转向杆", visual_section)
-        self.assertNotIn("燃烧器、锅架或气罐舱", visual_section)
-        self.assertNotIn("开放式烧烤炉体", visual_section)
+        self.assertIn("燃烧器、锅架或气罐舱", visual_section)
+        self.assertIn("开放式烧烤炉体", visual_section)
+        self.assertNotIn("明显揉皱成团的纸", visual_section)
 
     def test_multi_image_prompt_only_templates_candidate_observations(self) -> None:
         summary = make_two_detection_summary()
@@ -396,8 +397,49 @@ class VLMReviewTests(unittest.TestCase):
         )
         self.assertIn("每个 candidate_id 必须在 behavior_reviews 中恰好出现一次", prompt)
         self.assertIn('"bbox_normalized_xyxy":[0.15,0.08,0.84,0.95]', prompt)
-        self.assertIn("Detector outputs are visual proposals, not ground truth", prompt)
+        self.assertIn("Detector class labels are proposals, not ground truth", prompt)
+        self.assertIn("detector confidence 不是语义正确的证据", prompt)
+        self.assertIn("不得为已有 detector detection 输出 bbox", prompt)
         self.assertIn("塑料饮料瓶", prompt)
+
+    def test_prompt_includes_required_garbage_visual_rules(self) -> None:
+        summary = DetectionSummary(
+            total_detections=1,
+            counts_by_task_group={"garbage": 1},
+            detections=[
+                DetectionSummaryItem(
+                    observation_id="obs-0001",
+                    task_group="garbage",
+                    class_id=0,
+                    class_name="crumpled_paper_ball",
+                    confidence=0.97,
+                    bbox_xyxy=(1, 2, 30, 40),
+                    bbox_normalized_xyxy=(0.01, 0.025, 0.3, 0.5),
+                )
+            ],
+        )
+        prompt = build_review_prompt(
+            summary,
+            {
+                **CATALOG,
+                "garbage": ["crumpled_paper_ball", "plastic_drink_bottle"],
+            },
+            visual_class_guide={
+                "garbage": {
+                    "crumpled_paper_ball": {
+                        "visual": "纸质材料的不规则皱缩团状结构。",
+                        "distinguish": ["草地纹理、石头、阴影和背景斑块不是纸团。"],
+                    },
+                    "plastic_drink_bottle": {
+                        "visual": "可见瓶身、瓶颈和瓶盖的塑料瓶。",
+                    },
+                }
+            },
+        )
+
+        self.assertIn("纸质材料的不规则皱缩团状结构", prompt)
+        self.assertIn("草地纹理、石头、阴影和背景斑块不是纸团", prompt)
+        self.assertIn("可见瓶身、瓶颈和瓶盖的塑料瓶", prompt)
 
     def test_empty_required_reviews_still_parse_findings_and_behaviors(self) -> None:
         summary = make_summary().model_copy(
@@ -802,6 +844,25 @@ class VLMReviewTests(unittest.TestCase):
         )
         self.assertEqual(incomplete.decisions, [])
         self.assertEqual(incomplete.issues[0].code, "missing_observation_review")
+
+    def test_duplicate_required_object_review_is_reported(self) -> None:
+        decision = {"observation_id": "obs-0001", "verdict": "confirmed"}
+
+        parsed = parse_review_response(
+            json.dumps(
+                {
+                    "yolo_reviews": [decision, decision],
+                    "new_findings": [],
+                    "behavior_reviews": [],
+                }
+            ),
+            make_summary(),
+            CATALOG,
+            required_review_observation_ids=("obs-0001",),
+        )
+
+        self.assertEqual(len(parsed.decisions), 1)
+        self.assertIn("duplicate_observation", [issue.code for issue in parsed.issues])
 
     def test_parser_skips_invalid_task_group_but_keeps_valid_items(self) -> None:
         content = json.dumps(

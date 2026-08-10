@@ -52,7 +52,8 @@
 当前状态：
 
 - Thor 是独立 Developer Kit。
-- 尚未完成首次初始化和机器人接入。
+- 已使用 `/models/Qwen2.5-VL-32B-Instruct-AWQ` 与 served model alias `qwen-vl` 跑通单次 Multi-Image 行为链路；local 配置的 `WRC_VLM_MODEL_ID` 必须保持该 alias。
+- 机器人正式接入仍待完成。
 - 实际 JetPack、CUDA、TensorRT、ROS2 和 Docker 环境待确认。
 
 部署原则：

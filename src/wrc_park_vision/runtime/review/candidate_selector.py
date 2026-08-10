@@ -13,6 +13,7 @@ REASON_PRIORITY = {
     "low_confidence": 2,
     "behavior_candidate": 3,
     "cross_model_conflict": 4,
+    "task_group_required": 5,
 }
 
 
@@ -57,6 +58,8 @@ def select_review_candidates(
         if not isinstance(observation.geometry, BBoxGeometry):
             continue
         reasons: list[str] = []
+        if observation.task_group in settings.review_all_task_groups:
+            reasons.append("task_group_required")
         if (
             settings.include_low_confidence
             and observation.confidence < low_confidence_threshold

@@ -24,6 +24,30 @@ from .helpers import make_observation
 
 
 class ReviewTests(unittest.TestCase):
+    def test_review_all_task_groups_marks_high_confidence_object_required(self) -> None:
+        observation = make_observation(
+            "garbage",
+            "garbage",
+            0,
+            "crumpled_paper_ball",
+            0.97,
+            (10, 10, 80, 70),
+        )
+        coordinator = ReviewCoordinator(
+            ReviewSettings(
+                candidate_selection=CandidateSelectionSettings(
+                    review_all_task_groups=["garbage", "prohibited_items"]
+                )
+            )
+        )
+
+        reviewed, summary = coordinator.policy.apply([observation], [])
+
+        self.assertTrue(reviewed[0].review.required)
+        self.assertEqual(reviewed[0].review.reasons, ["task_group_required"])
+        self.assertTrue(summary.required)
+        self.assertIn("task_group_required", summary.reasons)
+
     def test_low_confidence_and_overlap_review(self) -> None:
         low = make_observation("garbage", "garbage", 1, "box", 0.3, (10, 10, 60, 60))
         other = make_observation("prohibited", "prohibited", 0, "spray", 0.9, (10, 10, 60, 60))

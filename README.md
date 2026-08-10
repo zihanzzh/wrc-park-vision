@@ -9,13 +9,14 @@ WRC 园区管理岗视觉识别项目。仓库同时作为 Obsidian vault，维�
 - YOLO-World 不负责垃圾；配置和 backend 都会拒绝其输出 `task_group: garbage`。
 - 模型结果统一为稳定 schema，并保留各自 `task_group`、类别、置信度、坐标和来源模型。
 - 跨任务高 IoU 结果不会被擅自删除，只会保留并标记冲突。
-- 正式 VLM 目标为 Qwen2.5-VL-32B；每张图片只发送一次请求，内容包含原始图片和最多 5 个候选驱动的重点 crops；接近全图的 crop 不重复发送。
+- 正式 VLM 为 Qwen2.5-VL-32B；每张图片只发送一次请求，内容包含原始图片和最多 5 个候选驱动的重点 crops；接近全图的 crop 不重复发送。
+- accuracy-first policy 通过 `review.candidate_selection.review_all_task_groups` 强制审核全部 `garbage` / `prohibited_items` detections；behavior 基础对象不做无条件全量审核。
 - corrected 继续复用 YOLO bbox；VLM 新 finding 必须返回相对原图的 normalized bbox，不再使用 crop-local 坐标。
 - Fusion 跨 YOLO 和统一 VLM findings 做同类 IoU 去重；不同类别高 IoU 结果保留并标记冲突。
 - 单图 Behavior Pipeline 根据基础对象生成候选，并由同一次多图 Review 确认四类不文明行为；没有基础对象时仍允许从原图发现明显行为。
 - 正式目标改为 accuracy-first；300 秒总预算和 180 秒 VLM timeout 仅作安全保护。TensorRT backend、正式 Thor 部署包、API、ROS2、tracking 和多帧行为判断尚未实现。
 
-正式数据和训练产物只保存在 3090 Linux 工作站，不进入本仓库。两个已训练 detector 已完成 macOS 与 Thor 实际运行验证；Qwen2.5-VL 旧单图 Review 已在 Thor 跑通，Runtime V3 单次多图链路目前通过 mock 自动测试，尚待真实服务复测。
+正式数据和训练产物只保存在 3090 Linux 工作站，不进入本仓库。两个已训练 detector 已完成 macOS 与 Thor 实际运行验证；Thor 已使用 Qwen2.5-VL-32B 跑通 Runtime V3 单次多图行为链路，当前重点是复测全量 object review 对高置信 false positive 的拒绝效果。
 
 ## Runtime 结构
 
@@ -63,9 +64,9 @@ python -m wrc_park_vision.runtime.cli \
 
 Runtime 在启动时校验 enabled 模块的模型路径，模型不存在会明确失败，不会触发自动下载。`device: auto` 优先选择 CUDA，其次 MPS，最后 CPU。
 
-固定类别的 enabled detection module 必须配置有序 `expected_class_names`。垃圾 YOLO11m 权重加载后会在处理图片前严格校验 class ID 连续性、类别数量、名称和顺序，避免错误权重静默进入 Runtime。YOLO-World 使用分组 `open_vocabulary_classes`，当前只允许 `prohibited_items` 与 `uncivilized_behavior` 基础对象。
+固定类别的 enabled detection module 必须配置有序 `expected_class_names`。垃圾 YOLO11m 权重加载后会在处理图片前严格校验 class ID 连续性、类别数量、名称和顺序，避免错误权重静默进入 Runtime。可选 `visual_class_guidance` 为这些固定类别提供正向结构与误报排除规则。YOLO-World 使用分组 `open_vocabulary_classes`，当前只允许 `prohibited_items` 与 `uncivilized_behavior` 基础对象。
 
-正式 example 配置启用 Qwen2.5-VL-32B，使用 `http://127.0.0.1:8000/v1/chat/completions` 和可配置 alias `qwen-vl-32b`。Runtime V3 每张图片只调用一次 provider：请求同时携带原始图片、紧凑 Detection Summary、行为候选和最多 5 个重点 crops。重点 crops 只围绕低置信、跨模型冲突、小目标和行为候选生成，不使用固定网格；面积达到原图 90% 的 crop 会跳过。VLM 图片最长边为 1024 像素、JPEG quality 90，bbox 始终保持原图坐标；multi-image/provider timeout 均为 180 秒，max tokens 为 1200。失败时 detector 结果保留并标记，顶层状态降级为 `partial_success`。
+正式 example 配置启用 Qwen2.5-VL-32B，使用 `http://127.0.0.1:8000/v1/chat/completions` 和可配置 served model alias。Runtime V3 每张图片只调用一次 provider：请求同时携带原始图片、紧凑 Detection Summary、行为候选和最多 5 个重点 crops。全部 garbage / prohibited detections 都进入同一次请求；behavior 基础对象仍按低置信、跨模型冲突、小目标和行为候选选择。面积达到原图 90% 的 crop 会跳过。VLM 图片最长边为 1024 像素、JPEG quality 90，bbox 始终保持原图坐标；multi-image/provider timeout 均为 180 秒，max tokens 为 1200。失败时 required detector 结果按 review failure policy 保留并标记，顶层状态降级为 `partial_success`。
 
 Preview 只读取最终 `PipelineResponse`：YOLO、VLM corrected 和 Multi-Image finding 都使用最终 observation 中的同一份 bbox，不重新计算或推理；无 geometry 的行为结果保留在 JSON，不扩展预览画布。`Observation.track_id` 已作为可空字段写入 schema，但当前没有实现 Tracking 或多帧融合。
 
@@ -95,7 +96,7 @@ python scripts/runtime/benchmark_thor.py \
 
 工具先检查 `/v1/models` readiness，复用同一个 `RuntimePipeline`，单独报告模型初始化和 warmup，并记录 detector、图像编码、payload、token、HTTP round trip、解析、Fusion 和 Competition adapter 指标。只有每次 VLM 完成且结果非 degraded 才通过验证。
 
-Thor 实测前检查 Qwen2.5-VL-32B 的准确模型/量化版本、`served-model-name=qwen-vl-32b`、`max_model_len`、`gpu_memory_utilization`、视觉输入限制、CPU offload、模型是否重复初始化，以及服务日志中的 fallback kernel 或兼容性警告。正式配置启用 `response_format: json_object`，需先确认 Thor 当前 vLLM 支持该参数。
+Thor 当前模型 root 为 `/models/Qwen2.5-VL-32B-Instruct-AWQ`，实际 `served-model-name` 为 `qwen-vl`；Thor 的 `WRC_VLM_MODEL_ID` 必须保持与该 alias 一致。实测前继续检查 `max_model_len`、`gpu_memory_utilization`、视觉输入限制、CPU offload、模型是否重复初始化，以及服务日志中的 fallback kernel 或兼容性警告。正式配置启用 `response_format: json_object`，需确认当前 vLLM 支持该参数。
 
 ## 自动测试
 
