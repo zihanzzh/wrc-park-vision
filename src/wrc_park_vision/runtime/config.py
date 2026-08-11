@@ -209,6 +209,11 @@ class MultiImageReviewSettings(ReviewPassSettings):
     max_tokens: Optional[int] = Field(default=700, gt=0)
 
 
+class TruncationFallbackSettings(BaseModel):
+    enabled: bool = True
+    max_tokens: int = Field(default=1800, gt=0)
+
+
 class ReviewSettings(BaseModel):
     low_confidence_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
     cross_model_iou_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
@@ -220,6 +225,15 @@ class ReviewSettings(BaseModel):
     )
     important_crops: ImportantCropSettings = Field(default_factory=ImportantCropSettings)
     multi_image: MultiImageReviewSettings = Field(default_factory=MultiImageReviewSettings)
+    truncation_fallback: TruncationFallbackSettings = Field(
+        default_factory=TruncationFallbackSettings
+    )
+    max_new_findings: int = Field(default=8, ge=0, le=32)
+    new_finding_existing_iou_threshold: float = Field(
+        default=0.80,
+        gt=0.0,
+        le=1.0,
+    )
     reserve_seconds_for_fusion_and_output: float = Field(default=0.75, ge=0.0)
     uncertain_policy: Literal["keep_flagged", "drop"] = "keep_flagged"
     review_failure_policy: Literal["keep_flagged", "drop_review_required"] = "keep_flagged"

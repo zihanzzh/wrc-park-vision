@@ -623,14 +623,43 @@ class RuntimePipeline:
                     review_summary.attempted = review_attempted
                     review_summary.status = "failed"
                     review_summary.metrics = vlm_metrics
-                    review_summary.passes.append(
-                        ReviewPassSummary(
-                            pass_id="multi_image",
-                            attempted=review_attempted,
-                            status="failed",
-                            error=message,
-                        )
+                    raw_response_debug = getattr(
+                        exc,
+                        "raw_response_debug",
+                        None,
                     )
+                    if isinstance(raw_response_debug, str):
+                        review_summary.raw_response_debug = raw_response_debug
+                    if vlm_metrics is not None and vlm_metrics.fallback_attempted:
+                        review_summary.passes.extend(
+                            [
+                                ReviewPassSummary(
+                                    pass_id="multi_image",
+                                    attempted=True,
+                                    status="failed",
+                                    error="response_truncated",
+                                    mode="primary",
+                                    fallback_reason="response_truncated",
+                                ),
+                                ReviewPassSummary(
+                                    pass_id="multi_image",
+                                    attempted=True,
+                                    status="failed",
+                                    error=message,
+                                    mode="compact_fallback",
+                                    fallback_reason="response_truncated",
+                                ),
+                            ]
+                        )
+                    else:
+                        review_summary.passes.append(
+                            ReviewPassSummary(
+                                pass_id="multi_image",
+                                attempted=review_attempted,
+                                status="failed",
+                                error=message,
+                            )
+                        )
                     postprocessing_failed = True
                 multi_image_review_duration = (
                     time.perf_counter() - multi_started

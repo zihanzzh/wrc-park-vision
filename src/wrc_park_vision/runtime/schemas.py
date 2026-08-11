@@ -327,6 +327,7 @@ class VLMReviewResult(BaseModel):
     behaviors: list[VLMBehaviorDecision] = Field(default_factory=list)
     issues: list[ReviewIssue] = Field(default_factory=list)
     metrics: Optional["VLMRequestMetrics"] = None
+    raw_response_debug: Optional[str] = Field(default=None, exclude=True, repr=False)
 
 
 class VLMRequestMetrics(BaseModel):
@@ -347,6 +348,18 @@ class VLMRequestMetrics(BaseModel):
     prompt_tokens: Optional[int] = Field(default=None, ge=0)
     completion_tokens: Optional[int] = Field(default=None, ge=0)
     total_tokens: Optional[int] = Field(default=None, ge=0)
+    request_count: int = Field(default=1, ge=1, le=2)
+    fallback_attempted: bool = False
+    fallback_reason: Optional[Literal["response_truncated"]] = None
+    fallback_max_tokens: Optional[int] = Field(default=None, gt=0)
+    fallback_prompt_character_count: Optional[int] = Field(default=None, ge=0)
+    fallback_vlm_http_round_trip_ms: Optional[float] = Field(default=None, ge=0.0)
+    fallback_response_content_length: Optional[int] = Field(default=None, ge=0)
+    fallback_response_parse_ms: Optional[float] = Field(default=None, ge=0.0)
+    fallback_finish_reason: Optional[str] = None
+    fallback_prompt_tokens: Optional[int] = Field(default=None, ge=0)
+    fallback_completion_tokens: Optional[int] = Field(default=None, ge=0)
+    fallback_total_tokens: Optional[int] = Field(default=None, ge=0)
 
 
 class FusionDecision(BaseModel):
@@ -415,6 +428,7 @@ class ReviewSummary(BaseModel):
     passes: list["ReviewPassSummary"] = Field(default_factory=list)
     uncertain_policy: Literal["keep_flagged", "drop"] = "keep_flagged"
     review_failure_policy: Literal["keep_flagged", "drop_review_required"] = "keep_flagged"
+    raw_response_debug: Optional[str] = Field(default=None, exclude=True, repr=False)
 
 
 class ReviewPassSummary(BaseModel):
@@ -426,6 +440,8 @@ class ReviewPassSummary(BaseModel):
     finding_count: int = Field(default=0, ge=0)
     issue_count: int = Field(default=0, ge=0)
     error: Optional[str] = None
+    mode: Literal["primary", "compact_fallback"] = "primary"
+    fallback_reason: Optional[Literal["response_truncated"]] = None
 
 
 class RuntimeErrorInfo(BaseModel):

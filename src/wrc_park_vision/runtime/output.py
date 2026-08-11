@@ -20,6 +20,7 @@ class OutputArtifacts:
     json_path: Optional[Path]
     competition_json_path: Optional[Path]
     preview_path: Optional[Path]
+    vlm_raw_response_path: Optional[Path]
 
 
 def _serialize_json(response: object) -> str:
@@ -67,6 +68,14 @@ def write_runtime_outputs(
         else None
     )
     preview_path: Optional[Path] = None
+    vlm_raw_response_path: Optional[Path] = None
+
+    if response.review.raw_response_debug is not None:
+        vlm_raw_response_path = request_dir / "vlm_raw_response.txt"
+        _write_serialized_json(
+            response.review.raw_response_debug,
+            vlm_raw_response_path,
+        )
 
     competition_response: CompetitionResponse | None = None
     if competition_json_path is not None:
@@ -150,4 +159,5 @@ def write_runtime_outputs(
         json_path=json_path,
         competition_json_path=competition_json_path,
         preview_path=preview_path,
+        vlm_raw_response_path=vlm_raw_response_path,
     )

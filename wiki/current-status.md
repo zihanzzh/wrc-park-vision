@@ -1,5 +1,17 @@
 # Current Status
 
+## 2026-08-11 VLM bounded output 与截断 fallback
+
+- Thor 真实 32B 请求在 16 个 required reviews、6 张图、`max_tokens=3000` 时仍以 `finish_reason=length` 截断。根因不是 detector 审核条目本身，而是旧协议允许 `new_findings` 无上限、behavior 对无事件输出冗余否定项，以及 object review 携带 reasoning/confidence 等自由文本，输出规模无法预先约束。
+- 正常 Multi-Image 请求改为严格有界协议：每个 required object 恰好一条最小 verdict；只有 corrected 可增加 task/class；behavior candidate 逐一返回最小 verdict，只有 confirmed 可带 bbox、confidence 和一句不超过 96 字符的证据；主动行为扫描只返回 confirmed；`new_findings` 最多 8 条且不得与 detector 或其他 finding 高 IoU 重复。
+- 输出优先级固定为 `yolo_reviews`、`behavior_reviews`、`new_findings`；Parser 不依赖 key 顺序，并拒绝 object review 的 reasoning/confidence/bbox 等额外字段。
+- 正常成功仍只有一次 VLM HTTP 请求。若 primary 明确 `finish_reason=length` 或 JSON 明显因截断未闭合，最多自动执行一次 compact fallback，复用同一原图和 crops，只请求所有 required object 与 behavior decisions，完全关闭 missed-object scan。
+- fallback 成功时 Review 保持 `completed`，object/behavior decisions 正常进入 Fusion，`new_findings=[]`，并以 `primary_response_truncated` / `missed_object_scan_skipped` issue 及 primary/fallback passes、metrics 标记降级原因；fallback 不完整或再次失败后才进入既有 `review_failure_policy`。
+- primary/fallback `max_tokens` 分别为 3000/1800，VLM timeout 为 300 秒，Runtime 总安全预算为 600 秒；正式 32B、garbage/prohibited 全量审核、六类垃圾指南、八类禁带品和四类行为主动扫描均保留。
+- primary 截断或任意 parse failure 的完整原始文本会单独写入请求目录的 `vlm_raw_response.txt`；该调试内容排除在内部结果序列化和 Competition Response 之外。
+- gitignored 的 `configs/runtime.yolo-world.local.yaml` 已同步上述通用策略，同时保留现有模型路径、endpoint、API key 环境变量和 served model alias 等机器配置。
+- 自动验证：全部 Runtime `unittest` 155 项、`compileall`、`git diff --check`、两个 example 与 gitignored local 配置 validation 均通过；真实 Thor 32B 尚待复测。
+
 ## 2026-08-10 Object Review accuracy-first policy
 
 - Thor 已使用 `Qwen2.5-VL-32B-Instruct-AWQ` 跑通 person + grass detection、`trampling_grass` candidate、32B confirmation、behavior bbox、Parser、Fusion `add_behavior`、Preview 和 Competition output。

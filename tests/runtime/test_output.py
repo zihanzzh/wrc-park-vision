@@ -13,6 +13,26 @@ from .helpers import make_observation, make_response, write_test_image
 
 
 class OutputTests(unittest.TestCase):
+    def test_raw_vlm_response_is_written_only_to_debug_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            response = make_response([], write_test_image(root / "image.jpg"))
+            response.review.raw_response_debug = "full raw response tail"
+
+            artifacts = write_runtime_outputs(
+                response,
+                root / "outputs",
+                PreviewSettings(enabled=False),
+                False,
+            )
+            internal = artifacts.json_path.read_text(encoding="utf-8")
+            competition = artifacts.competition_json_path.read_text(encoding="utf-8")
+            raw_response = artifacts.vlm_raw_response_path.read_text(encoding="utf-8")
+
+        self.assertEqual(raw_response, "full raw response tail")
+        self.assertNotIn("full raw response tail", internal)
+        self.assertNotIn("full raw response tail", competition)
+
     def test_successful_preview_timing_is_persisted_to_json(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -62,6 +62,10 @@ def main(argv: list[str] | None = None) -> int:
         f"{artifacts.competition_json_path if artifacts.competition_json_path else 'not generated'}"
     )
     print(f"preview: {artifacts.preview_path if artifacts.preview_path else 'not generated'}")
+    print(
+        "vlm_raw_response: "
+        f"{artifacts.vlm_raw_response_path if artifacts.vlm_raw_response_path else 'not generated'}"
+    )
     print(f"total_ms: {response.timing_ms.total:.2f}")
 
     if response.status == "success":

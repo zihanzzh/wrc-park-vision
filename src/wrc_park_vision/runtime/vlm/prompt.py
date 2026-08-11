@@ -15,9 +15,11 @@ TASK_GROUPS = ("prohibited_items", "garbage", "uncivilized_behavior")
 def _build_output_template(
     summary: DetectionSummary,
     required_review_observation_ids: tuple[str, ...],
+    *,
+    include_new_findings: bool,
 ) -> dict[str, object]:
     required_ids = set(required_review_observation_ids)
-    return {
+    template: dict[str, object] = {
         "yolo_reviews": [
             {
                 "id": item.observation_id,
@@ -26,18 +28,18 @@ def _build_output_template(
             for item in summary.detections
             if item.observation_id in required_ids
         ],
-        "new_findings": [],
         "behavior_reviews": [
             {
                 "candidate_id": item.id,
                 "class_name": item.class_name,
                 "verdict": "uncertain",
-                "confidence": 0.5,
-                "reasoning": "Visible evidence is insufficient.",
             }
             for item in summary.behavior_candidates
         ],
     }
+    if include_new_findings:
+        template["new_findings"] = []
+    return template
 
 
 def _build_object_guide(
@@ -155,6 +157,8 @@ def _build_prompt(
     crop_catalog: list[dict[str, object]],
     candidate_reasons: dict[str, set[str]],
     required_review_observation_ids: tuple[str, ...],
+    include_new_findings: bool,
+    max_new_findings: int,
 ) -> str:
     compact = {"ensure_ascii": False, "separators": (",", ":")}
     object_guide = _build_object_guide(
@@ -169,6 +173,7 @@ def _build_prompt(
     output_template = _build_output_template(
         summary,
         required_review_observation_ids,
+        include_new_findings=include_new_findings,
     )
     review_context = _compact_review_context(
         summary,
@@ -181,11 +186,24 @@ def _build_prompt(
         "verdict": "confirmed",
         "confidence": 0.92,
         "bbox_normalized_xyxy": [0.15, 0.08, 0.84, 0.95],
-        "reasoning": (
-            "The person's feet and body support points are visibly inside "
-            "the grass area."
-        ),
+        "reasoning": "feet visibly contact the grass",
     }
+    if not include_new_findings:
+        return f"""Compact fallback after a truncated primary response. Complete only required detector reviews and behavior review. Do not perform missed-object discovery.
+Detector class labels are proposals, not ground truth. Independently inspect visible structure.
+合法 task：{json.dumps(TASK_GROUPS, **compact)}
+合法 object：{json.dumps(class_catalog, **compact)}
+合法 behavior：{json.dumps(BEHAVIOR_CLASS_NAMES, **compact)}
+视觉指南：{json.dumps(object_guide, **compact)}
+审核输入：{json.dumps(review_context, **compact)}
+crop 映射：{json.dumps(crop_catalog, **compact)}
+
+严格规则：
+1. 每个 detection id 在 yolo_reviews 恰好一次。confirmed/rejected/uncertain 仅输出 id、verdict；corrected 仅增加 task_group、class_name。禁止 confidence、reasoning、bbox 和其他字段。
+2. 每个 behavior candidate 恰好一次。rejected/uncertain 仅输出 candidate_id、class_name、verdict；confirmed 才可增加 confidence、原图 bbox_normalized_xyxy 和一句极短 reasoning。无 candidate 的主动扫描只输出真正 confirmed 行为；没有则 []。
+3. 顶层字段必须且只能是 yolo_reviews、behavior_reviews。禁止 new_findings、分析、Markdown、输入复述、视觉指南复述和额外字段。完成 required decisions 后立即闭合 JSON。
+最小输出模板：{json.dumps(output_template, **compact)}
+"""
     return f"""You are the final visual reasoning judge. Detector class labels are proposals, not ground truth. Independently verify the visible object in every required detection; reject or correct detector results when visible evidence conflicts.
 一次完成检测审核、漏检扫描和主动行为判断。original_image 是坐标唯一基准；crop 只用于看细节。
 合法 task：{json.dumps(TASK_GROUPS, **compact)}
@@ -196,13 +214,13 @@ def _build_prompt(
 crop 映射：{json.dumps(crop_catalog, **compact)}
 
 规则：
-1. 审核输入中每个 detection id 在 yolo_reviews 恰好出现一次，不得遗漏或重复。verdict 只能是 confirmed/rejected/corrected/uncertain；仅 corrected 增加 task_group、class_name。
+1. 审核输入中每个 detection id 在 yolo_reviews 恰好出现一次，不得遗漏或重复。confirmed/rejected/uncertain 只能包含 id、verdict；corrected 只能包含 id、verdict、task_group、class_name。禁止 reasoning、confidence、bbox、description、detector information 和其他字段。
 2. 对每个 required object 独立检查可见内容：detector confidence 不是语义正确的证据，不得因高置信度默认 confirmed。只有可见物体结构匹配 detector class 才 confirmed；误报必须 rejected；只有允许目录中另一类别的结构明确时才 corrected；uncertain 只用于确实看不清。对 confirmed/corrected/rejected/uncertain 都不得为已有 detector detection 输出 bbox；Runtime 继续使用原 YOLO bbox。
 3. spray_can 只有在明确看见 aerosol/pressurized can 结构、圆柱罐体和喷嘴/按压喷头时才能 confirmed。普通塑料瓶不是 spray_can；塑料饮料瓶、香烟盒、纸盒、食品容器、普通包装或垃圾必须 rejected；属于允许目录中的其他类别时 corrected。
-4. new_findings 只报允许类别中的明确漏检，字段仅 task_group、class_name、confidence、bbox_normalized_xyxy，可选 crop_id。bbox 必须是 original_image 的 [x1,y1,x2,y2]。
-5. behavior candidate 不是结论。存在 candidate 时，每个 candidate_id 必须在 behavior_reviews 中恰好出现一次，不能跳过或返回空数组；verdict 只能是 confirmed/rejected/uncertain。confirmed 必须含 candidate_id（主动全图发现时省略）、class_name、verdict、confidence、原图 bbox_normalized_xyxy 和极短 reasoning；bbox 覆盖主要违规人物、车辆或违规关系区域。rejected/uncertain 可省略 bbox。
+4. new_findings 最多 {max_new_findings} 条，只报 detector 完全漏掉的高确定性明确物体，字段仅 task_group、class_name、confidence、bbox_normalized_xyxy，可选 crop_id。不得重复现有 detector bbox、不得为同一物体创建多条、不得把 correction 同时写成 finding、不得报告不确定物体。已有 detector proposal 的纠正只能用 yolo_reviews.corrected。无明确漏检返回 []。
+5. behavior candidate 不是结论。每个 candidate_id 必须在 behavior_reviews 中恰好出现一次。rejected/uncertain 只能包含 candidate_id、class_name、verdict；confirmed 才可增加 confidence、原图 bbox_normalized_xyxy 和一句极短 reasoning。无 candidate 的主动全图扫描只输出真正 confirmed 行为；不要输出四个 rejected 行为，没有发现则 behavior_reviews=[]。
 6. 无论有无 candidate，都主动检查四类行为：trampling_grass、smoking、blocking_fire_lane、standing_or_lying_on_bench。trampling_grass 仅当脚部、身体支撑点或实际行走位置在草坪上；仅在草坪旁、道路边或草坪背景前必须拒绝。smoking 需要香烟、烟雾、明确手到嘴动作或其他强视觉证据；仅有人、香烟盒或模糊手部动作必须拒绝。blocking_fire_lane 需要车辆实际停放/占用消防或紧急通道、明确禁停区域，或明显阻塞应急通行；普通道路车辆必须拒绝。standing_or_lying_on_bench 仅确认站在或躺在长椅上；正常坐姿必须拒绝。
-7. 只输出一个 JSON object；顶层字段必须且只能是 yolo_reviews、new_findings、behavior_reviews，三个值都必须是数组。禁止 behaviors、findings、Markdown、前后解释、null、额外顶层字段和长篇 reasoning。
+7. 只输出一个 JSON object；字段顺序为 yolo_reviews、behavior_reviews、new_findings，三个值都必须是数组。Do not repeat input detections. Do not explain your analysis. Do not describe objects outside JSON fields. Do not output detector confidence. Do not output bbox for existing detector reviews. Do not create new_findings for already detected objects. Do not repeat the visual class guide. Finish the JSON object as soon as required decisions are complete. 禁止 Markdown、null 和额外字段。
 confirmed behavior 完整格式示例：{json.dumps(confirmed_behavior_example, **compact)}
 最小输出模板：{json.dumps(output_template, **compact)}
 """
@@ -214,6 +232,8 @@ def build_multi_image_prompt(
     visual_class_guide: dict[str, dict[str, dict[str, object]]] | None = None,
     *,
     required_review_observation_ids: tuple[str, ...] | None = None,
+    include_new_findings: bool = True,
+    max_new_findings: int = 8,
 ) -> str:
     crop_catalog: list[dict[str, object]] = []
     for crop in request.crops:
@@ -243,6 +263,8 @@ def build_multi_image_prompt(
             if required_review_observation_ids is None
             else required_review_observation_ids
         ),
+        include_new_findings=include_new_findings,
+        max_new_findings=max_new_findings,
     )
 
 
@@ -261,6 +283,8 @@ def build_full_image_prompt(
         required_review_observation_ids=tuple(
             item.observation_id for item in summary.detections
         ),
+        include_new_findings=True,
+        max_new_findings=8,
     )
 
 

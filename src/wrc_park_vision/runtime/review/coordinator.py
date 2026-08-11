@@ -153,16 +153,41 @@ class ReviewCoordinator:
         merged.behaviors.extend(result.behaviors)
         merged.issues.extend(result.issues)
         merged.metrics = result.metrics
-        merged.passes.append(
-            ReviewPassSummary(
-                pass_id="multi_image",
-                attempted=True,
-                status="completed",
-                duration_ms=result.duration_ms,
-                finding_count=len(result.findings),
-                issue_count=len(result.issues),
+        merged.raw_response_debug = result.raw_response_debug
+        if result.metrics is not None and result.metrics.fallback_attempted:
+            merged.passes.extend(
+                [
+                    ReviewPassSummary(
+                        pass_id="multi_image",
+                        attempted=True,
+                        status="failed",
+                        error="response_truncated",
+                        mode="primary",
+                        fallback_reason="response_truncated",
+                    ),
+                    ReviewPassSummary(
+                        pass_id="multi_image",
+                        attempted=True,
+                        status="completed",
+                        duration_ms=result.duration_ms,
+                        finding_count=0,
+                        issue_count=len(result.issues),
+                        mode="compact_fallback",
+                        fallback_reason="response_truncated",
+                    ),
+                ]
             )
-        )
+        else:
+            merged.passes.append(
+                ReviewPassSummary(
+                    pass_id="multi_image",
+                    attempted=True,
+                    status="completed",
+                    duration_ms=result.duration_ms,
+                    finding_count=len(result.findings),
+                    issue_count=len(result.issues),
+                )
+            )
         return reviewed, merged
 
     @staticmethod

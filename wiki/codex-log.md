@@ -2,6 +2,18 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-08-11 VLM bounded output 与截断 fallback
+
+- 收紧 Multi-Image Prompt 和 Parser：object verdict 使用最小字段；behavior 只允许 confirmed 携带有限证据；`new_findings` 限制为最多 8 条，并在 Parser 中拒绝与 detector/已接收 finding 高 IoU 的重复框。
+- 调整 JSON 输出顺序为 object、behavior、missed findings，保留 32B 对全部 garbage/prohibited detections 的审核以及四类 behavior 主动扫描。
+- Qwen provider 对 `finish_reason=length` 或明显未闭合 JSON 最多自动执行一次 compact fallback；复用已编码的原图/crops，只恢复 required object 和 behavior decisions，不扫描 `new_findings`，也不会递归 retry。
+- fallback 成功结果继续进入 Fusion；passes/metrics 分别记录 primary、compact fallback 和 `response_truncated`。fallback 覆盖不完整或失败时，才沿用现有 review failure policy。
+- 完整异常响应通过内部非序列化字段传递并写为 `vlm_raw_response.txt`，不进入 `result.json` 或 Competition schema；CLI 在生成时显示该 artifact 路径。
+- example 与 gitignored Thor local 配置统一为 primary 3000、fallback 1800、VLM timeout 300、Runtime 600，并保留 local 的机器相关字段。
+- 新增/更新 16+ required prompt、严格字段、finding 上限/去重、单请求、fallback 成功/失败/单次上限、Fusion、behavior、raw artifact 和 Competition 隔离回归。
+
+验证结果：全部 Runtime `unittest` 155 项通过；`compileall`、`git diff --check`、两个 example 与 gitignored local 配置 validation 通过。未运行真实模型、未安装依赖、未 commit 或 push。
+
 ## 2026-08-10 Garbage / Prohibited 全量 32B Object Review
 
 - 新增向后兼容配置 `review.candidate_selection.review_all_task_groups`，正式 example 与 gitignored Thor local 配置设为 `[garbage, prohibited_items]`。

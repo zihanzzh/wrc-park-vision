@@ -13,6 +13,7 @@ from pydantic import (
     Field,
     ValidationError,
     field_validator,
+    model_validator,
 )
 
 from ..schemas import (
@@ -60,6 +61,14 @@ class _RawDecision(BaseModel):
         stripped = value.strip()
         return stripped or None
 
+    @model_validator(mode="after")
+    def validate_bounded_fields(self) -> "_RawDecision":
+        if {"confidence", "reasoning"} & self.model_fields_set:
+            raise ValueError(
+                "yolo review must not contain confidence or reasoning"
+            )
+        return self
+
 
 class _RawFinding(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -83,6 +92,16 @@ class _RawFinding(BaseModel):
         stripped = value.strip()
         return stripped or None
 
+    @model_validator(mode="after")
+    def validate_bounded_fields(self) -> "_RawFinding":
+        if "reasoning" in self.model_fields_set:
+            raise ValueError("new finding must not contain reasoning")
+        if {"review_pass", "geometry_source"} & self.model_fields_set:
+            raise ValueError(
+                "new finding must not contain review_pass or geometry_source"
+            )
+        return self
+
 
 class _RawBehaviorDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -92,7 +111,7 @@ class _RawBehaviorDecision(BaseModel):
     verdict: Literal["confirmed", "rejected", "uncertain"]
     confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     evidence_observation_ids: list[str] = Field(default_factory=list)
-    reasoning: Optional[str] = None
+    reasoning: Optional[str] = Field(default=None, max_length=96)
     bbox_normalized_xyxy: Optional[tuple[float, float, float, float]] = None
 
     @field_validator("candidate_id", "class_name", mode="before")
@@ -106,6 +125,24 @@ class _RawBehaviorDecision(BaseModel):
         if isinstance(value, list):
             return [item.strip() if isinstance(item, str) else item for item in value]
         return value
+
+    @model_validator(mode="after")
+    def validate_bounded_fields(self) -> "_RawBehaviorDecision":
+        if "evidence_observation_ids" in self.model_fields_set:
+            raise ValueError(
+                "behavior review must not repeat evidence_observation_ids"
+            )
+        if self.reasoning is not None and ("\n" in self.reasoning or "\r" in self.reasoning):
+            raise ValueError("behavior reasoning must be one short line")
+        if self.verdict != "confirmed" and {
+            "confidence",
+            "reasoning",
+            "bbox_normalized_xyxy",
+        } & self.model_fields_set:
+            raise ValueError(
+                "rejected/uncertain behavior must not contain confidence, reasoning, or bbox"
+            )
+        return self
 
 
 def _strip_code_fence(content: str) -> str:
@@ -124,6 +161,21 @@ def _class_id(task_group: str, class_name: str, class_catalog: dict[str, list[st
     if class_name not in class_catalog[task_group]:
         raise ReviewResponseError(f"unknown VLM class for {task_group}: {class_name}")
     return class_catalog[task_group].index(class_name)
+
+
+def _normalized_bbox_iou(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> float:
+    left = max(first[0], second[0])
+    top = max(first[1], second[1])
+    right = min(first[2], second[2])
+    bottom = min(first[3], second[3])
+    intersection = max(0.0, right - left) * max(0.0, bottom - top)
+    first_area = max(0.0, first[2] - first[0]) * max(0.0, first[3] - first[1])
+    second_area = max(0.0, second[2] - second[0]) * max(0.0, second[3] - second[1])
+    union = first_area + second_area - intersection
+    return intersection / union if union > 0 else 0.0
 
 
 def _section_items(
@@ -195,6 +247,9 @@ def parse_review_response(
     require_finding_bbox: bool = False,
     valid_crop_ids: set[str] | None = None,
     required_review_observation_ids: Sequence[str] | None = None,
+    max_new_findings: int = 8,
+    new_finding_existing_iou_threshold: float = 0.80,
+    allow_new_findings: bool = True,
 ) -> ParsedReviewResponse:
     """Keep valid items and report invalid siblings without inventing semantics."""
     try:
@@ -349,7 +404,33 @@ def parse_review_response(
     ]
 
     findings: list[VLMFinding] = []
-    for index, value in enumerate(_section_items(payload, "new_findings", issues)):
+    finding_items = _section_items(payload, "new_findings", issues)
+    if not allow_new_findings and finding_items:
+        issues.append(
+            ReviewIssue(
+                section="new_findings",
+                code="new_findings_disabled",
+                message="new_findings are disabled for compact fallback",
+                review_pass=review_pass,
+            )
+        )
+        finding_items = []
+    elif len(finding_items) > max_new_findings:
+        issues.append(
+            ReviewIssue(
+                section="new_findings",
+                code="new_findings_limit_exceeded",
+                message=(
+                    f"new_findings exceeds maximum {max_new_findings}: "
+                    f"actual={len(finding_items)}"
+                ),
+                review_pass=review_pass,
+            )
+        )
+        finding_items = finding_items[:max_new_findings]
+    existing_boxes = [item.bbox_normalized_xyxy for item in summary.detections]
+    accepted_finding_boxes: list[tuple[float, float, float, float]] = []
+    for index, value in enumerate(finding_items):
         try:
             item = _RawFinding.model_validate(value)
             class_id = _class_id(item.task_group, item.class_name, class_catalog)
@@ -372,6 +453,22 @@ def parse_review_response(
                 )
             if require_finding_bbox and item.bbox_normalized_xyxy is None:
                 raise ReviewResponseError("finding requires bbox_normalized_xyxy")
+            if item.bbox_normalized_xyxy is not None and any(
+                _normalized_bbox_iou(item.bbox_normalized_xyxy, bbox)
+                >= new_finding_existing_iou_threshold
+                for bbox in existing_boxes
+            ):
+                raise ReviewResponseError(
+                    "new finding duplicates an existing detector bbox; use yolo_reviews.corrected"
+                )
+            if item.bbox_normalized_xyxy is not None and any(
+                _normalized_bbox_iou(item.bbox_normalized_xyxy, bbox)
+                >= new_finding_existing_iou_threshold
+                for bbox in accepted_finding_boxes
+            ):
+                raise ReviewResponseError(
+                    "new finding duplicates an earlier new finding"
+                )
             if review_pass == "full_image":
                 if item.crop_id is not None:
                     raise ReviewResponseError("full-image finding must not include crop_id")
@@ -420,6 +517,8 @@ def parse_review_response(
             )
             continue
         findings.append(finding)
+        if finding.bbox_normalized_xyxy is not None:
+            accepted_finding_boxes.append(finding.bbox_normalized_xyxy)
 
     known_observation_ids = set(summary_by_id)
     behavior_classes = {item.class_name: item for item in summary.behavior_classes}

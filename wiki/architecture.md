@@ -4,7 +4,7 @@
 
 ## 当前架构结论
 
-当前主线是“多个独立视觉模型 + 共享 Runtime Pipeline + 单次多图 Qwen / VLM”：
+当前主线是“多个独立视觉模型 + 共享 Runtime Pipeline + bounded Multi-Image Qwen / VLM”：正常路径单次请求，仅截断时允许一次 compact fallback。
 
 ```text
 Robot sends one image
@@ -15,7 +15,7 @@ Robot sends one image
   -> Normalize detections and build Detection Summary
   -> Require all garbage/prohibited detections; select behavior evidence candidates
   -> Generate at most five merged important crops
-  -> Qwen2.5-VL-32B reviews original image and crops in one request
+  -> Qwen2.5-VL-32B bounded review（截断时一次 compact fallback）
   -> Fuse/deduplicate original-image-coordinate findings
   -> Return PipelineResponse, JSON and Preview
 ```
@@ -28,13 +28,13 @@ Robot sends one image
 - 多个独立模型共享同一个 Runtime Pipeline。
 - 机器人只发送图片，不提供 `taskId`、`taskType`、`mode` 或 `category`。
 - Pipeline 根据模型来源写入 `task_group`，不依赖机器人提供任务类型。
-- Qwen / VLM 启用时每张图片只执行一次 multi-image 请求；Detection Summary 只是上下文，不是观察范围。
+- Qwen / VLM 启用时正常路径每张图片只执行一次 multi-image 请求；只有 response 明确截断时才复用同一批图片执行一次 compact fallback，禁止递归 retry。Detection Summary 只是上下文，不是观察范围。
 - `review_all_task_groups` 当前配置为 `garbage` 与 `prohibited_items`，两组所有 detector observations 都必须在同一次请求的 `yolo_reviews` 中获得 decision；behavior 基础对象继续使用原 Candidate Selector。
 - VLM 不修改 YOLO geometry；corrected 复用 YOLO bbox。VLM 新 finding 必须返回相对原图的 normalized bbox。
 - crops 只围绕重要候选生成、合并和限量，不使用固定网格；原图和全部 crops 在同一次 HTTP 请求中发送。
 - 原始 YOLO observations、VLM findings 和最终 fusion decisions 必须同时保留。
 - 正式优先级为物体准确率、冲突裁决、四类行为和输出协议稳定性；10 秒性能目标已取消。
-- 300 秒总预算和 180 秒 VLM timeout 只负责异常保护；Thor 验证要求 VLM 实际完成且结果非 degraded。
+- 600 秒总预算和 300 秒 VLM timeout 只负责异常保护；Thor 验证要求 primary 或 bounded fallback 实际完成，且人工核对降级字段。
 - 内部 `PipelineResponse` 与 Competition SDK Response V1 通过独立 adapter 隔离。
 
 该路线是比赛时间限制下的风险控制方案。数据正确性和可交付性优先于单模型架构的简洁性。
@@ -55,7 +55,7 @@ image path
   -> 生成 Detection Summary
   -> 选择低置信、冲突、小目标和行为候选
   -> 生成并合并最多 5 个重点 crops，跳过面积达到原图 90% 的重复 crop
-  -> Qwen2.5-VL-32B 单次 Multi-Image Review
+  -> Qwen2.5-VL-32B bounded Multi-Image Review
   -> 将 finding 原图 normalized bbox 转为 canonical geometry
   -> Final Fusion 生成显式决策
   -> PipelineResponse
@@ -75,13 +75,13 @@ image path
 - `Observation.track_id` 已作为可空字段预留，`RequestContext` 支持 ISO 8601 timestamp 和非负 frame index；当前没有实现 Tracking 或多帧融合。
 - schema 已为 `mask`、`pose`、`region` 和 `relation` 预留 observation geometry。
 - TensorRT backend 和未来独立 behavior model module 仍明确返回未实现错误；当前单图 Behavior Pipeline 已作为检测后的语义阶段实现。
-- Review provider 默认关闭；启用后通过 OpenAI-compatible endpoint 对每张图片执行一次 multi-image 请求。
+- Review provider 默认关闭；启用后通过 OpenAI-compatible endpoint 执行一次 primary multi-image 请求，只有明确截断时最多追加一次 compact fallback。
 - 统一 Prompt 和逐项容错 Parser 使用 `yolo_reviews`、`new_findings`、`behavior_reviews` 三个顶层数组。
 - 新 finding 的原图 normalized bbox 经过合法性检查和 `[0,1]` 裁剪；单条无效 finding 只产生 `ReviewIssue`。
 - Final Fusion 对最终 observations 应用 confirmed / corrected / rejected / uncertain 语义；corrected 复用 YOLO bbox 和 confidence，原始检测信息保留在 Detection Summary、Review 和 FusionDecision 中。
 - Fusion 对同类结果按配置化 IoU 去重，并保留 merged source trace；不同类别重叠结果双方保留并标记 conflict。
 - 当前只支持单张图片路径 CLI；detector 执行支持配置化 sequential / parallel，默认 sequential。
-- 已实现请求级 300 秒安全预算、VLM 剩余 timeout、详细 VLM timing、Competition adapter 和降级状态；当前没有实现 API、ROS2、tracking 或 TensorRT backend。
+- 已实现请求级 600 秒安全预算、VLM 剩余 timeout、primary/fallback metrics、Competition adapter 和降级状态；当前没有实现 API、ROS2、tracking 或 TensorRT backend。
 - Runtime 要求 Python 3.10 或更高版本。
 
 ## 路线变更原因
@@ -108,7 +108,7 @@ Runtime v1 当前负责：
 - 隔离单模块异常，并返回 `success`、`partial_success` 或 `failed`；schema 仍接受历史值 `failure`。
 - 输出统一 JSON 和直接复用最终 observation 的 Preview。
 
-请求级 300 秒安全预算已实现；VLM 请求失败或剩余时间不足时按 `review_failure_policy` 降级并返回 Competition Response。操作系统调度、冷启动和外部传输无法由进程内 deadline 绝对保证。
+请求级 600 秒安全预算已实现；VLM 请求及唯一一次截断 fallback 失败或剩余时间不足时按 `review_failure_policy` 降级并返回 Competition Response。操作系统调度、冷启动和外部传输无法由进程内 deadline 绝对保证。
 
 ### 2. Prohibited Items Detector
 
@@ -236,7 +236,7 @@ Runtime v1 采用保守规则：
 - 单次 multi-image 响应通过 `new_findings` 报告漏检目标，并通过 `behavior_reviews` 确认或否定行为；无 candidate 时仍可从原图发现明显行为。
 - 所有 finding bbox 都相对完整原图归一化。`crop_id` 只表示帮助判断的 crop，不改变坐标系。
 - parser 分别解析 observation review、finding 和 behavior review。每个 required observation 必须恰好出现一次；非法项、缺失项、重复 ID 或非法类别写入 `ReviewIssue`，合法项继续进入 Fusion；顶层响应无法解析时才整体失败。
-- provider 默认关闭，因此现有 detector-only Pipeline 继续工作；启用 provider 时每张输入图片只执行一次 HTTP 请求。
+- provider 默认关闭，因此现有 detector-only Pipeline 继续工作；启用 provider 时正常成功路径每张输入图片只执行一次 HTTP 请求，截断路径最多两次。
 - Thor 已验证旧单图 Review 链路；Runtime V3 的多图请求延迟、准确率和漏检收益仍需实测。
 
 ### 9. Final Fusion 与输出
@@ -252,7 +252,7 @@ Runtime v1 采用保守规则：
 
 ### 10. Accuracy-first 安全预算与降级
 
-300 秒总预算覆盖图片接收、多个视觉模块、结果规范化、冲突处理、VLM、融合和序列化；180 秒 VLM timeout 是安全保护，不是性能目标。
+600 秒总预算覆盖图片接收、多个视觉模块、结果规范化、冲突处理、VLM、融合和序列化；300 秒 VLM timeout 是安全保护，不是性能目标。
 
 Runtime 应支持：
 
@@ -263,7 +263,7 @@ Runtime 应支持：
 - 对未确认结果返回 `suspected` / `uncertain`。
 - 记录各阶段耗时和降级原因。
 
-Runtime 从图片处理开始计算总 deadline，并在调用 VLM 前扣除已用时间与 Fusion/输出预留。VLM timeout 取 multi-image、provider 与 remaining 的最小值；remaining 不足时跳过请求，required observations 按失败策略处理。请求、响应解析或 Fusion 失败时，Runtime 保留可用 detector 结果并返回 `partial_success`。
+Runtime 从图片处理开始计算总 deadline，并在调用 VLM 前扣除已用时间与 Fusion/输出预留。VLM timeout 取 multi-image、provider 与 remaining 的最小值；fallback 继续使用同一 deadline 的剩余时间。remaining 不足时不追加请求，required observations 按失败策略处理。请求、响应解析或 Fusion 失败时，Runtime 保留可用 detector 结果并返回 `partial_success`。
 
 Thor 验证必须预热并运行多次，且每次 VLM 实际完成、非 degraded；timing 继续记录用于后续优化，但当前通过条件不含固定延迟阈值。Qwen2.5-VL-32B 真实 accuracy-first 验收尚未执行。
 

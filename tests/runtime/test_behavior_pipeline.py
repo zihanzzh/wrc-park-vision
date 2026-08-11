@@ -15,8 +15,10 @@ from wrc_park_vision.runtime.preview import render_preview
 from wrc_park_vision.runtime.review import ReviewProvider
 from wrc_park_vision.runtime.schemas import (
     DetectionSummary,
+    ReviewIssue,
     VLMBehaviorDecision,
     VLMFinding,
+    VLMRequestMetrics,
     VLMReviewDecision,
     VLMReviewResult,
     ValidatedImage,
@@ -228,6 +230,81 @@ class BehaviorPipelineTests(unittest.TestCase):
             render_preview(image_path, response, preview_path, make_behavior_config().preview)
             with Image.open(preview_path) as preview:
                 self.assertEqual(preview.size, (100, 80))
+
+    def test_compact_fallback_result_fuses_object_and_behavior(self) -> None:
+        class FallbackResultProvider(ReviewProvider):
+            def review(
+                self,
+                image: ValidatedImage,
+                summary: DetectionSummary,
+            ) -> VLMReviewResult:
+                candidate = summary.behavior_candidates[0]
+                return VLMReviewResult(
+                    provider="fake_qwen",
+                    model_id="Qwen2.5-VL-32B",
+                    duration_ms=3,
+                    review_pass="multi_image",
+                    decisions=[
+                        VLMReviewDecision(
+                            observation_id=item.observation_id,
+                            verdict="confirmed",
+                        )
+                        for item in summary.detections
+                    ],
+                    behaviors=[
+                        VLMBehaviorDecision(
+                            id="behavior-review-0001",
+                            candidate_id=candidate.id,
+                            class_id=candidate.class_id,
+                            class_name=candidate.class_name,
+                            verdict="confirmed",
+                            confidence=0.9,
+                            evidence_observation_ids=candidate.evidence_observation_ids,
+                            bbox_normalized_xyxy=(0.1, 0.1, 0.8, 0.9),
+                            reasoning="feet visibly contact the grass",
+                        )
+                    ],
+                    issues=[
+                        ReviewIssue(
+                            section="new_findings",
+                            code="missed_object_scan_skipped",
+                            message="new_findings disabled in compact fallback",
+                            review_pass="multi_image",
+                        )
+                    ],
+                    metrics=VLMRequestMetrics(
+                        request_count=2,
+                        fallback_attempted=True,
+                        fallback_reason="response_truncated",
+                        fallback_max_tokens=1800,
+                    ),
+                )
+
+        response = self.run_pipeline(
+            [
+                behavior_detection(0, "person", (10, 10, 30, 70)),
+                behavior_detection(2, "grass", (0, 50, 100, 80)),
+            ],
+            FallbackResultProvider(),
+        )
+
+        self.assertEqual(response.errors, [])
+        self.assertEqual(response.status, "success")
+        self.assertEqual(response.review.status, "completed")
+        self.assertEqual(response.review.findings, [])
+        self.assertEqual(
+            [(item.mode, item.status) for item in response.review.passes],
+            [("primary", "failed"), ("compact_fallback", "completed")],
+        )
+        self.assertTrue(
+            any(item.action == "keep_yolo" for item in response.fusion.decisions)
+        )
+        self.assertTrue(
+            any(item.action == "add_behavior" for item in response.fusion.decisions)
+        )
+        self.assertTrue(
+            any(item.kind == "behavior" for item in response.observations)
+        )
 
     def test_full_image_vlm_can_find_behavior_without_object_detections(self) -> None:
         def full_image_finding(summary: DetectionSummary) -> list[VLMBehaviorDecision]:

@@ -20,6 +20,7 @@ from wrc_park_vision.runtime.schemas import (
     DetectionSummary,
     ReviewIssue,
     VLMFinding,
+    VLMRequestMetrics,
     VLMReviewDecision,
     VLMReviewResult,
     ValidatedImage,
@@ -453,6 +454,46 @@ class PipelineTests(unittest.TestCase):
             )
         )
         self.assertFalse(any(error.code == "fusion_failure" for error in response.errors))
+
+    def test_failed_compact_fallback_uses_review_failure_policy(self) -> None:
+        class FailedFallbackProvider(ReviewProvider):
+            def review(self, image: ValidatedImage, summary: DetectionSummary) -> VLMReviewResult:
+                error = RuntimeError("compact fallback failed")
+                error.metrics = VLMRequestMetrics(
+                    request_count=2,
+                    fallback_attempted=True,
+                    fallback_reason="response_truncated",
+                    fallback_max_tokens=1800,
+                )
+                error.raw_response_debug = "primary and fallback raw responses"
+                raise error
+
+        module = DetectionModule(
+            "prohibited",
+            "prohibited_items",
+            "good",
+            FakeBackend(
+                "good",
+                [BackendDetection(0, "spray_can", 0.3, (10, 10, 30, 40))],
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            response = RuntimePipeline(
+                make_config(("prohibited",)),
+                [module],
+                review_provider=FailedFallbackProvider(),
+            ).process(write_test_image(Path(directory) / "image.jpg"))
+
+        self.assertEqual(response.status, "partial_success")
+        self.assertEqual(response.fusion.decisions[0].action, "keep_review_failed")
+        self.assertEqual(
+            [(item.mode, item.status) for item in response.review.passes],
+            [("primary", "failed"), ("compact_fallback", "failed")],
+        )
+        self.assertEqual(
+            response.review.raw_response_debug,
+            "primary and fallback raw responses",
+        )
 
     def test_full_image_review_and_fusion_preserve_all_sources(self) -> None:
         class SemanticReviewProvider(ReviewProvider):

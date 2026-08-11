@@ -1,7 +1,7 @@
 runtime:
   execution: sequential
   # accuracy-first 安全上限，不是性能目标。
-  total_timeout_seconds: 300
+  total_timeout_seconds: 600
   output_dir: runtime_outputs/yolo_world
 
 modules:
@@ -184,16 +184,21 @@ review:
     skip_crop_area_ratio: 0.90
   multi_image:
     enabled: true
-    timeout_seconds: 180
-    max_tokens: 1200
+    timeout_seconds: 300
+    max_tokens: 3000
+  truncation_fallback:
+    enabled: true
+    max_tokens: 1800
+  max_new_findings: 8
+  new_finding_existing_iou_threshold: 0.80
   provider:
     enabled: true
     type: qwen2_5_vl
     endpoint: http://127.0.0.1:8000/v1/chat/completions
     model_id: qwen-vl-32b
     api_key_env: null
-    timeout_seconds: 180
-    max_tokens: 1200
+    timeout_seconds: 300
+    max_tokens: 3000
     temperature: 0
     image_max_side: 1024
     jpeg_quality: 90

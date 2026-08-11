@@ -285,6 +285,15 @@
 - 完整性：每个 required observation 必须在 `yolo_reviews` 中恰好出现一次；missing / duplicate 继续记录明确 issue，缺项或失败不得伪装为审核成功。
 - Thor：正式模型为 `/models/Qwen2.5-VL-32B-Instruct-AWQ`，当前 vLLM served alias 为 `qwen-vl`；local 配置通过环境变量保留该机器值。
 
+### D047：VLM 使用 bounded primary 与单次 compact truncation fallback
+
+- 日期：2026-08-11
+- 决策：正常路径仍是一次统一 Multi-Image Qwen2.5-VL-32B 请求，但输出协议必须严格有界。object review 不允许自由文本或 detector bbox；behavior 仅 confirmed 可带一句短证据；`new_findings` 最多 8 条并执行 detector/同批 finding 去重。
+- 例外：仅当 primary 返回 `finish_reason=length` 或 JSON 明显因截断未闭合时，允许一次且仅一次 compact fallback。fallback 复用同一原图和 crops，只输出全部 required object 与 behavior decisions，禁用 `new_findings`。本决策取代 D039/D045 中“任何情况绝不发第二次请求”的绝对限制，但正常成功路径仍严格只有一次请求。
+- 完成语义：fallback 完整成功时 Review 为 completed，object/behavior 正常 Fusion，missed-object scan 以 issue/metric 标记为未完成；fallback 不完整或失败后才应用既有 `review_failure_policy`。
+- 预算：primary 3000 tokens、fallback 1800 tokens、VLM timeout 300 秒、Runtime 总安全预算 600 秒。该预算由配置管理，不在 Provider 内写死正式环境值。
+- 可观测性：primary/fallback passes 与 metrics 记录 `response_truncated`；截断或 parse failure 的完整 raw response 只写 Runtime debug artifact，不进入 Competition external schema。
+
 ## 被替代的历史方案
 
 - 早期 YOLO11n 环境验证：已完成，仅保留历史意义。

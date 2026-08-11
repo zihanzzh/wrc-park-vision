@@ -463,8 +463,6 @@ class VLMReviewTests(unittest.TestCase):
                             "class_name": "plastic_drink_bottle",
                             "confidence": 0.76,
                             "bbox_normalized_xyxy": [0.2, 0.2, 0.4, 0.5],
-                            "review_pass": "multi_image",
-                            "geometry_source": "vlm_multi_image",
                         }
                     ],
                     "behavior_reviews": [
@@ -494,17 +492,13 @@ class VLMReviewTests(unittest.TestCase):
         )
         self.assertEqual(parsed.issues, [])
 
-    def test_parser_accepts_minimal_7b_response_and_empty_reasoning(self) -> None:
+    def test_parser_accepts_minimal_bounded_response(self) -> None:
         content = json.dumps(
             {
                 "yolo_reviews": [
                     {
                         "observation_id": " obs-0001 ",
                         "verdict": "confirmed",
-                        "corrected_task_group": None,
-                        "corrected_class_name": None,
-                        "confidence": None,
-                        "reasoning": "",
                     }
                 ],
                 "new_findings": [
@@ -512,7 +506,6 @@ class VLMReviewTests(unittest.TestCase):
                         "task_group": " garbage ",
                         "class_name": " plastic_drink_bottle ",
                         "confidence": 0.7,
-                        "reasoning": None,
                     }
                 ],
                 "behavior_reviews": [],
@@ -522,7 +515,7 @@ class VLMReviewTests(unittest.TestCase):
         parsed = parse_review_response(content, make_summary(), CATALOG)
 
         self.assertEqual(parsed.decisions[0].observation_id, "obs-0001")
-        self.assertEqual(parsed.decisions[0].reasoning, "")
+        self.assertIsNone(parsed.decisions[0].reasoning)
         self.assertEqual(parsed.findings[0].task_group, "garbage")
         self.assertEqual(parsed.findings[0].class_name, "plastic_drink_bottle")
         self.assertIsNone(parsed.findings[0].reasoning)
@@ -598,8 +591,6 @@ class VLMReviewTests(unittest.TestCase):
                         "verdict": "corrected",
                         "corrected_task_group": "prohibited_items",
                         "corrected_class_name": "portable_gas_stove",
-                        "confidence": 0.9,
-                        "reasoning": "semantic correction",
                     }
                 ],
                 "new_findings": [
@@ -607,7 +598,6 @@ class VLMReviewTests(unittest.TestCase):
                         "task_group": "garbage",
                         "class_name": "plastic_drink_bottle",
                         "confidence": 0.8,
-                        "reasoning": "missed by YOLO",
                     }
                 ],
             }
@@ -629,16 +619,12 @@ class VLMReviewTests(unittest.TestCase):
                         "class_name": "plastic_drink_bottle",
                         "confidence": 0.8,
                         "bbox_normalized_xyxy": [0.2, 0.2, 0.1, 0.5],
-                        "review_pass": "full_image",
-                        "geometry_source": "vlm_full_image",
                     },
                     {
                         "task_group": "garbage",
                         "class_name": "plastic_drink_bottle",
                         "confidence": 0.7,
                         "bbox_normalized_xyxy": [-0.1, 0.1, 1.1, 0.9],
-                        "review_pass": "full_image",
-                        "geometry_source": "vlm_full_image",
                     },
                 ],
                 "behavior_reviews": [],
@@ -670,8 +656,6 @@ class VLMReviewTests(unittest.TestCase):
                         "confidence": 0.65,
                         "bbox_normalized_xyxy": [0.1, 0.2, 0.8, 0.9],
                         "crop_id": "important-crop-01",
-                        "review_pass": "multi_image",
-                        "geometry_source": "vlm_multi_image",
                     }
                 ],
                 "behavior_reviews": [],
@@ -737,7 +721,6 @@ class VLMReviewTests(unittest.TestCase):
                         "candidate_id": "behavior-candidate-0001",
                         "class_name": "trampling_grass",
                         "verdict": "rejected",
-                        "reasoning": "person is beside the grass",
                     },
                     {
                         "candidate_id": None,
@@ -872,7 +855,6 @@ class VLMReviewTests(unittest.TestCase):
                     {
                         "task_group": "允许的 task_group",
                         "class_name": "speaker",
-                        "reasoning": None,
                     }
                 ],
                 "behavior_reviews": [],
@@ -896,7 +878,6 @@ class VLMReviewTests(unittest.TestCase):
                         "verdict": "rejected",
                         "corrected_task_group": None,
                         "corrected_class_name": "speaker",
-                        "confidence": 0.83,
                     }
                 ],
                 "new_findings": [],
@@ -1015,7 +996,6 @@ class VLMReviewTests(unittest.TestCase):
             "candidate_id": "behavior-candidate-0001",
             "class_name": "trampling_grass",
             "verdict": "rejected",
-            "reasoning": "person is beside the grass",
         }
 
         parsed = parse_review_response(
@@ -1222,8 +1202,6 @@ class VLMReviewTests(unittest.TestCase):
                                         "confidence": 0.7,
                                         "bbox_normalized_xyxy": [0.5, 0.5, 0.8, 0.8],
                                         "crop_id": crops[0].crop_id,
-                                        "review_pass": "multi_image",
-                                        "geometry_source": "vlm_multi_image",
                                     }
                                 ],
                                 "behavior_reviews": [],
@@ -1300,16 +1278,222 @@ class VLMReviewTests(unittest.TestCase):
             def read(self) -> bytes:
                 return json.dumps(response_payload).encode("utf-8")
 
-        with patch("urllib.request.urlopen", return_value=FakeResponse()):
+        with patch("urllib.request.urlopen", return_value=FakeResponse()) as urlopen:
             with self.assertRaises(ReviewResponseError) as raised:
                 provider.review(image, make_summary())
 
         message = str(raised.exception)
-        self.assertIn("raw_response_excerpt='not-json-start", message)
         self.assertIn("finish_reason='length'", message)
-        self.assertIn("...", message)
-        self.assertNotIn("hidden-tail", message)
-        self.assertLess(len(message), 800)
+        self.assertEqual(urlopen.call_count, 2)
+        self.assertTrue(raised.exception.metrics.fallback_attempted)
+        self.assertEqual(raised.exception.metrics.request_count, 2)
+        self.assertIn("hidden-tail", raised.exception.raw_response_debug)
+        self.assertIn("compact_fallback_response", raised.exception.raw_response_debug)
+
+    def test_prompt_for_sixteen_required_reviews_is_compact_and_ordered(self) -> None:
+        detections = [
+            DetectionSummaryItem(
+                observation_id=f"obs-{index:04d}",
+                task_group="prohibited_items",
+                class_id=0,
+                class_name="spray_can",
+                confidence=0.5,
+                bbox_xyxy=(1, 2, 30, 40),
+                bbox_normalized_xyxy=(0.01, 0.025, 0.3, 0.5),
+            )
+            for index in range(1, 17)
+        ]
+        summary = DetectionSummary(
+            total_detections=16,
+            counts_by_task_group={"prohibited_items": 16},
+            detections=detections,
+        )
+        request = MultiImageReviewRequest(image=ValidatedImage(
+            "image.jpg", Image.new("RGB", (100, 80), "white"), 100, 80
+        ), summary=summary)
+
+        prompt = build_multi_image_prompt(
+            request,
+            CATALOG,
+            required_review_observation_ids=tuple(
+                item.observation_id for item in detections
+            ),
+            max_new_findings=8,
+        )
+        template = prompt_output_template(prompt)
+
+        self.assertEqual(len(template["yolo_reviews"]), 16)
+        self.assertLess(
+            prompt.index('"yolo_reviews"'),
+            prompt.index('"behavior_reviews"'),
+        )
+        self.assertLess(
+            prompt.index('"behavior_reviews"'),
+            prompt.index('"new_findings"'),
+        )
+        self.assertIn("最多 8 条", prompt)
+        self.assertNotIn('"confidence":null', prompt)
+        self.assertNotIn('"reasoning":null', prompt)
+
+    def test_parser_rejects_forbidden_yolo_extras(self) -> None:
+        parsed = parse_review_response(
+            json.dumps(
+                {
+                    "yolo_reviews": [
+                        {
+                            "id": "obs-0001",
+                            "verdict": "confirmed",
+                            "confidence": None,
+                        }
+                    ],
+                    "behavior_reviews": [],
+                    "new_findings": [],
+                }
+            ),
+            make_summary(),
+            CATALOG,
+        )
+
+        self.assertEqual(parsed.decisions, [])
+        self.assertEqual(
+            [issue.code for issue in parsed.issues],
+            ["invalid_item", "missing_observation_review"],
+        )
+
+    def test_new_findings_are_capped_and_detector_duplicates_are_rejected(self) -> None:
+        findings = [
+            {
+                "task_group": "garbage",
+                "class_name": "plastic_drink_bottle",
+                "confidence": 0.9,
+                "bbox_normalized_xyxy": [0.01, 0.025, 0.3, 0.5],
+            },
+            *[
+                {
+                    "task_group": "garbage",
+                    "class_name": "plastic_drink_bottle",
+                    "confidence": 0.8,
+                    "bbox_normalized_xyxy": [0.4 + index * 0.01, 0.6, 0.405 + index * 0.01, 0.61],
+                }
+                for index in range(9)
+            ],
+        ]
+        parsed = parse_review_response(
+            json.dumps(
+                {
+                    "yolo_reviews": [{"id": "obs-0001", "verdict": "confirmed"}],
+                    "behavior_reviews": [],
+                    "new_findings": findings,
+                }
+            ),
+            make_summary(),
+            CATALOG,
+            max_new_findings=8,
+        )
+
+        self.assertEqual(len(parsed.findings), 7)
+        self.assertIn("new_findings_limit_exceeded", [issue.code for issue in parsed.issues])
+        self.assertTrue(
+            any("duplicates an existing detector bbox" in issue.message for issue in parsed.issues)
+        )
+
+    def test_qwen_length_fallback_succeeds_once_without_new_findings(self) -> None:
+        summary = make_summary().model_copy(
+            update={
+                "behavior_classes": [
+                    BehaviorClassSummary(class_id=0, class_name="trampling_grass")
+                ],
+                "behavior_candidates": [
+                    BehaviorCandidate(
+                        id="behavior-candidate-0001",
+                        class_id=0,
+                        class_name="trampling_grass",
+                        evidence_observation_ids=["obs-0001"],
+                        evidence_class_names=["person", "grass"],
+                    )
+                ],
+            }
+        )
+        provider = Qwen25VLProvider(
+            ReviewProviderSettings(
+                enabled=True,
+                endpoint="http://localhost:8000/v1/chat/completions",
+                model_id="Qwen2.5-VL-32B",
+                max_tokens=3000,
+            ),
+            CATALOG,
+            review_settings=ReviewSettings.model_validate(
+                {
+                    "require_finding_bbox": False,
+                    "multi_image": {"max_tokens": 3000},
+                    "truncation_fallback": {"max_tokens": 1800},
+                }
+            ),
+        )
+        payloads = [
+            {
+                "choices": [{"finish_reason": "length", "message": {"content": '{"yolo_reviews":['}}],
+                "usage": {"completion_tokens": 3000},
+            },
+            {
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "yolo_reviews": [{"id": "obs-0001", "verdict": "confirmed"}],
+                                    "behavior_reviews": [
+                                        {
+                                            "candidate_id": "behavior-candidate-0001",
+                                            "class_name": "trampling_grass",
+                                            "verdict": "confirmed",
+                                            "reasoning": "feet are visibly on grass",
+                                        }
+                                    ],
+                                }
+                            )
+                        },
+                    }
+                ],
+                "usage": {"completion_tokens": 120},
+            },
+        ]
+        bodies: list[dict[str, object]] = []
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return None
+
+            def read(self) -> bytes:
+                return json.dumps(self.payload).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            bodies.append(json.loads(request.data.decode("utf-8")))
+            return FakeResponse(payloads[len(bodies) - 1])
+
+        image = ValidatedImage("image.jpg", Image.new("RGB", (100, 80), "white"), 100, 80)
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = provider.review(image, summary)
+
+        self.assertEqual(len(bodies), 2)
+        self.assertEqual(bodies[0]["max_tokens"], 3000)
+        self.assertEqual(bodies[1]["max_tokens"], 1800)
+        fallback_prompt = bodies[1]["messages"][0]["content"][0]["text"]
+        self.assertNotIn('"new_findings"', fallback_prompt)
+        self.assertEqual(result.decisions[0].verdict, "confirmed")
+        self.assertEqual(result.behaviors[0].verdict, "confirmed")
+        self.assertEqual(result.findings, [])
+        self.assertEqual(result.metrics.request_count, 2)
+        self.assertEqual(result.metrics.fallback_reason, "response_truncated")
+        self.assertEqual(result.metrics.fallback_finish_reason, "stop")
+        self.assertIn("missed_object_scan_skipped", [issue.code for issue in result.issues])
 
 
 if __name__ == "__main__":
