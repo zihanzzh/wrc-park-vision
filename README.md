@@ -1,27 +1,66 @@
 # WRC Park Vision
 
-WRC 园区管理岗视觉识别 Runtime。当前开发状态为 **feature complete / integration ready**：禁带品、垃圾和四类不文明行为已在 NVIDIA Jetson AGX Thor 上完成真实 accuracy-first 验收。
+WRC Park Vision is an accuracy-first computer vision runtime for intelligent park inspection and management. It combines YOLO-based object proposals, a dedicated garbage detector, Qwen2.5-VL-32B semantic verification and behavior reasoning, and deterministic fusion. The system has been deployed and validated on NVIDIA Jetson AGX Thor and exposes an integration-ready Python API and competition response.
 
-## 最终数据流
+- **Status:** Feature Complete / Integration Ready
+- **Release:** v1.0.0
+- **Target:** NVIDIA Jetson AGX Thor
+- **VLM:** Qwen2.5-VL-32B-Instruct-AWQ
+
+## Highlights
+
+- YOLOv8s-WorldV2 open-vocabulary object proposals
+- Dedicated YOLO11m garbage detector
+- Qwen2.5-VL-32B semantic verification and behavior reasoning
+- Four supported uncivilized behavior classes
+- Accuracy-first review of every garbage and prohibited-item proposal
+- Multi-image review using the original frame plus focused crops
+- Bounded JSON output with one-shot compact truncation fallback
+- Deterministic review fusion and cross-source deduplication
+- Reusable Python integration API and shared CLI pipeline
+- NVIDIA Thor deployment with Docker and vLLM
+
+## Architecture
 
 ```text
-image / camera frame
-  -> RuntimePipeline
-  -> YOLOv8s-WorldV2 + YOLO11m garbage detector
-  -> Behavior Candidate Generation
-  -> Accuracy-first Review Policy
-  -> Multi-Image Qwen2.5-VL-32B
-  -> deterministic Fusion
-  -> PipelineResponse
-  -> Competition Response Adapter
-  -> competition_result.json
+Image / Camera Frame
+        ↓
+YOLO-World + Garbage YOLO11m
+        ↓
+Behavior Candidate Generation
+        ↓
+Accuracy-first Qwen2.5-VL-32B Review
+        ↓
+Bounded JSON / Truncation Fallback
+        ↓
+Deterministic Fusion
+        ↓
+PipelineResponse
+        ↓
+CompetitionResponse
 ```
 
-核心职责分层：Detector 是 proposal / localization layer，32B VLM 是 semantic verification + behavior reasoning layer，Fusion 是 deterministic final decision layer。正常帧只发送一次 VLM 请求；明确截断时最多追加一次 compact fallback。
+**Detector** = proposal and localization layer · **32B VLM** = semantic verification and behavior reasoning layer · **Fusion** = deterministic final decision layer.
 
-## 产品 Python API
+Normal frames use one unified VLM request. A second, compact request is allowed only when the primary response is clearly truncated.
 
-产品代码应长驻一个 `RuntimePipeline`，不能每帧重新初始化模型。现有 Pipeline 就是正式集成 API，没有第二套推理逻辑：
+## Supported Tasks
+
+The runtime class catalog is sourced from `configs/runtime.yolo-world.example.yaml` and detector weight metadata.
+
+| Task | Classes |
+|---|---|
+| Prohibited Items | `spray_can`, `portable_gas_stove`, `megaphone`, `skateboard`, `kick_scooter`, `speaker`, `roller_skates`, `barbecue_grill` |
+| Garbage | `crumpled_paper_ball`, `disposable_food_container`, `empty_cigarette_box`, `plastic_drink_bottle`, `plastic_food_wrapper`, `rigid_takeout_bag` |
+| Behaviors | `trampling_grass`, `smoking`, `blocking_fire_lane`, `standing_or_lying_on_bench` |
+
+Auxiliary behavior objects: `person`, `bench`, `grass`, `cigarette`, `vehicle`.
+
+## Quick Start
+
+### Python Integration API
+
+Keep one `RuntimePipeline` instance alive so models are initialized once and reused across frames:
 
 ```python
 from datetime import datetime, timezone
@@ -50,13 +89,11 @@ with RuntimePipeline(config) as runtime:
     product_json = product_result.model_dump(mode="json")
 ```
 
-`process()` 也接受 `PIL.Image.Image` 或内部 `ValidatedImage`，适合相机帧内存调用。内存帧不会自动写临时图片；如需生成 `preview.jpg`，应传入可读取的图片路径。
+`process()` also accepts `PIL.Image.Image` and the internal `ValidatedImage` abstraction. In-memory frames are not written to temporary files; provide a readable image path when `preview.jpg` is required.
 
-详细对接说明见 [Integration Guide](wiki/integration-guide.md)。
+### CLI
 
-## Thor / 本地 CLI
-
-CLI 与 Python API 共用同一个 `RuntimePipeline`：
+The CLI and product API use the same `RuntimePipeline`:
 
 ```bash
 python -m wrc_park_vision.runtime.cli \
@@ -64,99 +101,81 @@ python -m wrc_park_vision.runtime.cli \
   --image test_images/example.jpg
 ```
 
-默认生成 `result.json`、`competition_result.json` 和 `preview.jpg`。可使用 `--no-preview`、`--output-dir` 或 `--output-mode both|internal|competition`。退出码：`0` 成功、`2` 部分成功、`1` 失败。
+By default, the CLI generates `result.json`, `competition_result.json`, and `preview.jpg`. Use `--no-preview`, `--output-dir`, or `--output-mode both|internal|competition` as needed. Exit codes are `0` for success, `2` for partial success, and `1` for failure.
 
-## 正式配置与模型
+See the [Integration Guide](wiki/integration-guide.md) for the full product handoff contract.
 
-Tracked deployable templates：
+## Deployment
 
-- `configs/runtime.example.yaml`
-- `configs/runtime.yolo-world.example.yaml`
+- **Hardware:** NVIDIA Jetson AGX Thor Developer Kit
+- **Runtime:** Docker + vLLM
+- **VLM:** Qwen2.5-VL-32B-Instruct-AWQ
+- **Served model alias:** `qwen-vl`
+- **Host model directory:** `models/Qwen2.5-VL-32B-Instruct-AWQ`
+- **Container model directory:** `/models/Qwen2.5-VL-32B-Instruct-AWQ`
+- **Policy:** accuracy-first; fixed sub-10-second latency is not a release requirement
 
-Machine-specific config：
+The repository does not prescribe an unverified Docker command. Deployment must reuse the validated environment and mount configuration so the container path above remains correct.
 
-- `configs/runtime.yolo-world.local.yaml`，由 `.gitignore` 排除。
-- 权重路径、endpoint、API key 和设备参数不得写入 tracked template。
-
-正式环境：
-
-- Garbage detector：YOLO11m。
-- Object proposals：YOLOv8s-WorldV2 / YOLO-World。
-- Semantic review：`Qwen2.5-VL-32B-Instruct-AWQ`。
-- vLLM served model alias：`qwen-vl`。
-- 目标硬件：NVIDIA Jetson AGX Thor Developer Kit，Docker + vLLM。
-- 宿主机模型目录：`models/Qwen2.5-VL-32B-Instruct-AWQ`。
-- 容器内模型目录：`/models/Qwen2.5-VL-32B-Instruct-AWQ`。仓库没有固化具体 Docker 启动命令；部署时必须使用已验收环境的挂载参数，使上述容器路径成立。
-- 策略：accuracy-first。600 秒 Runtime 总预算和 300 秒 VLM timeout 是安全上限，不是 `<10 seconds` 验收目标。
-- Token：primary 3000，compact fallback 1800。
-
-启动 Runtime 前检查 vLLM：
+Before starting the runtime, verify the vLLM service:
 
 ```bash
 curl http://127.0.0.1:8000/v1/models
 ```
 
-响应必须包含 `qwen-vl`，且 local YAML 的 `WRC_VLM_MODEL_ID` 必须一致。
+The response must expose `qwen-vl`, and `WRC_VLM_MODEL_ID` in the local configuration must match that alias.
 
-## 正式类别
+## Output Contracts
 
-类别真源为 `configs/runtime.yolo-world.example.yaml` 与 detector 权重 metadata。
+### `PipelineResponse` — internal, debug, and audit
 
-Prohibited items（8 类）：
+The complete runtime result includes module status, fused observations, Detection Summary, VLM review decisions, Fusion decisions, issues and errors, timings, and request metrics. The CLI serializes this contract as `result.json`.
 
-1. `spray_can`
-2. `portable_gas_stove`
-3. `megaphone`
-4. `skateboard`
-5. `kick_scooter`
-6. `speaker`
-7. `roller_skates`
-8. `barbecue_grill`
+### `CompetitionResponse` — robot and product integration
 
-Garbage（6 类）：
+The product-facing response contains:
 
-1. `crumpled_paper_ball`
-2. `disposable_food_container`
-3. `empty_cigarette_box`
-4. `plastic_drink_bottle`
-5. `plastic_food_wrapper`
-6. `rigid_takeout_bag`
+- `frame`: frame ID, timestamp, width, and height
+- `status`: `success`, `partial_success`, or `failed`
+- `objects`: final class, task group, pixel/normalized bbox, confidence, review status, and source
+- `behaviors`: behavior class, confidence, and evidence object IDs
+- `processing_time_ms`
+- `degraded`
 
-Behavior auxiliary objects：`person`、`bench`、`grass`、`cigarette`、`vehicle`。
+`objects` may include `prohibited_items`, `garbage`, and `uncivilized_behavior` auxiliary objects. Only observations that remain after Fusion are exported; rejected proposals are omitted.
 
-正式 behaviors：`trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。
+## Reliability & Failure Handling
 
-## Output contracts
+- **Detector isolation:** one detector may fail without discarding results from successful modules; the response becomes `partial_success` and should be logged or alerted.
+- **VLM failure fallback:** request or parse failures retain and mark required detector proposals according to `review_failure_policy`, with `degraded=true`.
+- **Truncation fallback:** a truncated primary response triggers one compact retry. If it succeeds, object and behavior decisions still reach Fusion, `new_findings=[]`, and the product response remains explicitly degraded.
+- **No retry loop:** if the compact fallback also fails, the runtime applies the existing review failure policy without another retry.
+- **Failed result:** invalid input or no successful detector module produces `failed`; product code must not treat it as a valid recognition result. Preview failure does not delete already generated structured results.
 
-### Runtime `PipelineResponse`
+## Runtime Configuration
 
-用于 debug、audit 和 pipeline inspection，包含 module status、最终 observations、Detection Summary、VLM review、Fusion decisions、issues/errors、timings 和 request metrics。CLI 的 `result.json` 是该结构的 JSON 形式。
+Tracked deployable templates:
 
-### Competition / Product `CompetitionResponse`
+- `configs/runtime.example.yaml`
+- `configs/runtime.yolo-world.example.yaml`
 
-用于机器人和产品集成，固定包含：
+Machine-specific configuration:
 
-- `frame`：`frame_id`、timestamp、width、height。
-- `status`：`success`、`partial_success` 或 `failed`。
-- `objects`：最终 object ID、task group、class、pixel/normalized bbox、confidence、review status、source。
-- `behaviors`：四类正式行为、confidence、evidence object IDs。
-- `processing_time_ms`。
-- `degraded`。
+- `configs/runtime.yolo-world.local.yaml` is excluded by `.gitignore`.
+- Weight paths, endpoints, API keys, and device-specific settings must not be written into tracked templates.
 
-`objects` 当前可能包含 `prohibited_items`、`garbage` 和 `uncivilized_behavior` 辅助对象。只有 Fusion 后仍有效的 observations 会进入 product response；rejected proposal 不会输出。
+Current accuracy-first safety limits:
 
-## Failure semantics
+- Runtime total timeout: 600 seconds
+- VLM timeout: 300 seconds
+- Primary output budget: 3000 tokens
+- Compact fallback budget: 1800 tokens
 
-- 单个 YOLO module 失败：隔离该模块；若其他模块成功，返回 `partial_success`，结果仍可作为 detector fallback 使用，但产品应记录并报警。
-- VLM 请求或解析失败：按 `review_failure_policy` 保留并标记 required detector proposals，返回 `partial_success` / `degraded=true`。
-- Primary 截断：自动进行一次 compact fallback；成功时 object/behavior decisions 继续 Fusion，`new_findings=[]`，Review 保持 completed，但 product response 为 `degraded=true`。
-- Fallback 再失败：不重试，进入既有 review failure policy。
-- `failed`：输入无效或没有成功 detector module，产品不应把结果当作有效识别结果。
-- Preview 失败不删除已生成的结构化推理结果，但应记录 output error。
+These are safety limits, not performance claims. Datasets, weights, the 32B model, runtime outputs, previews, and raw VLM responses must not be committed to Git.
 
-## 安装与验证
+## Installation & Verification
 
-Python 要求 3.10+：
+Python 3.10 or newer is required:
 
 ```bash
 python3 -m venv .venv
@@ -165,14 +184,21 @@ python -m pip install -e ".[ultralytics,yolo-world,dev]"
 python -m unittest discover -s tests -t . -v
 ```
 
-不要把数据集、权重、32B 模型、runtime outputs、preview 或 raw VLM response 提交到 Git。
+## Documentation
 
-## 文档入口
+Detailed engineering documentation is maintained under `wiki/`:
 
 - [Project Context](PROJECT_CONTEXT.md)
+- [Architecture](wiki/architecture.md)
 - [Integration Guide](wiki/integration-guide.md)
 - [Deployment Checklist](wiki/deployment-checklist.md)
-- [Architecture](wiki/architecture.md)
 - [Current Status](wiki/current-status.md)
 - [Decisions](wiki/decisions.md)
 - [Hardware Notes](wiki/hardware-notes.md)
+
+## Development Status
+
+- **Development Status:** Feature Complete / Integration Ready
+- **Release:** v1.0.0
+
+The project is now in a stable delivery state. Future feature work should start from the release branch or a dedicated new branch rather than changing the validated runtime in place.
