@@ -36,7 +36,7 @@
 - 这是以 object detection 为主的任务。
 - 需要在短时间窗口内完成识别。
 - 要重点控制误报，不能把普通物品误判成禁带品。
-- 适合小模型快速识别 + 低置信度大模型复核。
+- 当前交付方案由 detector 定位 proposal，并让全部 prohibited proposals 经过 32B VLM 语义复核，不只复核低置信结果。
 
 ## 任务二：不文明行为提醒
 
@@ -55,8 +55,8 @@
 
 - 这不是单纯 object detection。
 - 需要结合 person、bench、草坪 / 消防通道区域、姿态、动作、上下文关系。
-- 可能需要规则判断、VLM 复核、pose estimation、tracking 或多帧时序信息。
-- 不应在第一版中简单假设 YOLO 能直接识别完整行为。
+- 当前交付方案由 object candidates + 32B VLM 主动全图扫描完成单帧语义判断；pose、tracking 或多帧时序属于未来增强。
+- YOLO auxiliary objects 不能直接等同于完整行为。
 
 ## 任务三：垃圾识别与拾取分类
 
@@ -86,13 +86,13 @@
 - 误识别、误提示会导致扣分。
 - 禁带品不能把普通物品误判成禁带品。
 - 不文明行为不能对正常行为或错误对象提醒。
-- 系统不能只依赖单帧低置信度结果直接触发动作。
-- 架构中必须考虑 confidence 阈值、多帧确认、疑似结果、低置信度复核、日志回流。
+- 系统不能把 detector proposal 直接当成最终语义结论；产品动作应读取 Fusion 后结果和 degraded/review status。
+- 当前架构使用全量 object review、行为语义复核、确定性 Fusion、降级标记和日志回流；多帧确认不是当前 Runtime 的硬依赖。
 
 ## 对架构的影响
 
 三类任务的逻辑不同：
 
-- 禁带品：短时间窗口，小模型优先，多帧确认，低置信度复核。
+- 禁带品：detector proposal 定位，全部 proposal 经 32B 复核。
 - 垃圾：可静止识别，先 detection，后续视抓取需求考虑 segmentation。
-- 不文明行为：语义和关系判断更复杂，不应简单当作普通物体检测。
+- 不文明行为：object candidate + 32B 全图语义判断，不作为普通物体类别直接检测。

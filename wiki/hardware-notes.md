@@ -52,9 +52,9 @@
 当前状态：
 
 - Thor 是独立 Developer Kit。
-- 已使用 `/models/Qwen2.5-VL-32B-Instruct-AWQ` 与 served model alias `qwen-vl` 跑通单次 Multi-Image 行为链路；local 配置的 `WRC_VLM_MODEL_ID` 必须保持该 alias。
-- 机器人正式接入仍待完成。
-- 实际 JetPack、CUDA、TensorRT、ROS2 和 Docker 环境待确认。
+- 已使用 `/models/Qwen2.5-VL-32B-Instruct-AWQ` 与 served model alias `qwen-vl` 完成禁带品、垃圾、四类行为和完整 Runtime/Competition/Preview 链路真实验收；local 配置的 `WRC_VLM_MODEL_ID` 必须保持该 alias。
+- Runtime 已 integration-ready；机器人 transport 与现场产品接线仍由集成方完成。
+- 已验收环境的 JetPack、CUDA、TensorRT、Docker 和 vLLM 具体版本/启动参数需要补入 release manifest；ROS2 不是当前 Runtime 的硬依赖。
 
 部署原则：
 
@@ -88,7 +88,6 @@
 ```text
 Mac 开发共享 Runtime 与文档
   -> 3090 顺序训练两个 YOLO11m
-  -> Thor 构建/验证多个 TensorRT engine
-  -> Thor Qwen2.5-VL-32B accuracy-first 验证
-  -> 机器人联调和部署包交付
+  -> Thor 运行 YOLO / YOLO-World + Qwen2.5-VL-32B accuracy-first 完整验收（已完成）
+  -> 产品 transport 联调和 release bundle 交付
 ```

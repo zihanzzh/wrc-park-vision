@@ -6,7 +6,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TypeAlias
 
 from PIL import Image, UnidentifiedImageError
 
@@ -48,8 +48,26 @@ from .schemas import (
 from .vlm import Qwen25VLProvider
 
 
-def validate_image(image_path: Path) -> ValidatedImage:
-    path = image_path.expanduser().resolve()
+ImageInput: TypeAlias = str | Path | Image.Image | ValidatedImage
+
+
+def validate_image(image_input: ImageInput) -> ValidatedImage:
+    if isinstance(image_input, ValidatedImage):
+        if image_input.width <= 0 or image_input.height <= 0:
+            raise ValueError(
+                "input image has invalid dimensions: "
+                f"{image_input.width}x{image_input.height}"
+            )
+        return image_input
+    if isinstance(image_input, Image.Image):
+        image = image_input.convert("RGB")
+        image.load()
+        width, height = image.size
+        if width <= 0 or height <= 0:
+            raise ValueError(f"input image has invalid dimensions: {width}x{height}")
+        return ValidatedImage("<memory:pillow-image>", image, width, height)
+
+    path = Path(image_input).expanduser().resolve()
     if not path.is_file():
         raise FileNotFoundError(f"input image does not exist: {path}")
     try:
@@ -333,7 +351,7 @@ class RuntimePipeline:
 
     def process(
         self,
-        image_path: Path,
+        image_input: ImageInput,
         context: Optional[RequestContext] = None,
         request_id: Optional[str] = None,
     ) -> PipelineResponse:
@@ -342,12 +360,17 @@ class RuntimePipeline:
         resolved_request_id = request_id or str(uuid.uuid4())
         request_context = context or RequestContext()
         try:
-            image = validate_image(image_path)
+            image = validate_image(image_input)
         except Exception as exc:
             return PipelineResponse(
                 request_id=resolved_request_id,
                 status="failed",
-                input=InputInfo(image_path=str(image_path), width=0, height=0, context=request_context),
+                input=InputInfo(
+                    image_path=str(image_input),
+                    width=0,
+                    height=0,
+                    context=request_context,
+                ),
                 review={"required": False, "reasons": []},
                 errors=[RuntimeErrorInfo(stage="input", code="invalid_image", message=str(exc))],
                 timing_ms=TimingInfo(total=(time.perf_counter() - started) * 1000.0),

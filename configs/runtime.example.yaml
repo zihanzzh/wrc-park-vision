@@ -196,7 +196,7 @@ review:
     enabled: true
     type: qwen2_5_vl
     endpoint: http://127.0.0.1:8000/v1/chat/completions
-    model_id: qwen-vl-32b
+    model_id: qwen-vl
     api_key_env: null
     timeout_seconds: 300
     max_tokens: 3000

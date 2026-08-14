@@ -669,7 +669,7 @@ review:
                         config.review.provider.endpoint,
                         "http://127.0.0.1:8000/v1/chat/completions",
                     )
-                    self.assertEqual(config.review.provider.model_id, "qwen-vl-32b")
+                    self.assertEqual(config.review.provider.model_id, "qwen-vl")
                     self.assertIsNone(config.review.provider.api_key_env)
                     self.assertEqual(config.review.provider.timeout_seconds, 300)
                     self.assertEqual(config.review.provider.max_tokens, 3000)

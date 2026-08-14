@@ -14,6 +14,7 @@ from wrc_park_vision.runtime.schemas import (
     RequestContext,
     ReviewSummary,
     VLMFinding,
+    VLMRequestMetrics,
     VLMReviewDecision,
 )
 
@@ -21,6 +22,25 @@ from .helpers import make_observation, make_response, write_test_image
 
 
 class CompetitionResponseTests(unittest.TestCase):
+    def test_compact_fallback_marks_product_response_degraded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            response = make_response(
+                [],
+                write_test_image(Path(directory) / "image.jpg"),
+            )
+        response.review.status = "completed"
+        response.review.metrics = VLMRequestMetrics(
+            request_count=2,
+            fallback_attempted=True,
+            fallback_reason="response_truncated",
+            fallback_max_tokens=1800,
+        )
+
+        sdk = build_competition_response(response)
+
+        self.assertEqual(sdk.status, "success")
+        self.assertTrue(sdk.degraded)
+
     def test_adapter_uses_final_fused_objects_and_frame_metadata(self) -> None:
         detector = make_observation(
             "prohibited_items", "detector", 0, "spray_can", 0.61, (10, 10, 30, 40)

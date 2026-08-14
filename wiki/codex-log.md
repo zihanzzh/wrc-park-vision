@@ -2,6 +2,18 @@
 
 本文件记录 Codex 对项目做过的 meaningful change。
 
+## 2026-08-11 Final engineering closure / integration-ready
+
+- 根据 Thor 最终真实验收，将项目状态固化为 feature complete / integration ready；不修改 detector/VLM 算法，不继续 accuracy tuning。
+- 复用现有 `RuntimePipeline` 作为唯一产品 API，并从 package-level 稳定导出配置加载、RequestContext、PipelineResponse 与 Competition adapter。`process()` 小幅扩展为接受路径、PIL frame 或 `ValidatedImage`，模型仍只初始化一次。
+- Competition adapter 在 primary 截断但 compact fallback 成功时标记 `degraded=true`，同时保留 Review completed 和 Fusion 后结果。
+- tracked example served alias 从旧 `qwen-vl-32b` 更正为 Thor 已验收的 `qwen-vl`；项目版本更新为 1.0.0。
+- 重写 README、PROJECT_CONTEXT、current status 和 current architecture；新增 Integration Guide 与 Deployment/Recovery Checklist，并清理仍把 7B、未实测或 10 秒当作当前状态的表述。
+- `.gitignore` 增加 `models/`、`datasets/`、`datasets_final/`、`*.safetensors` 和 `previews/`，继续覆盖 weights、runtime outputs 和机器 local config。
+- Git 当前 tree 未跟踪数据集、模型、权重、runtime outputs、preview 或 raw VLM response；完整历史发现两个旧 `datasets_stage` JPG blob 超过 10 MiB，本轮只报告，不重写历史。
+
+验证结果：标准库完整 `unittest` 157 项通过；`compileall`、`git diff --check` 与三个 Runtime config validation 通过。当前 `.venv` 未安装可选 pytest，因此未擅自安装依赖；同一 `tests/` 已由 unittest 全量执行。未运行真实 Qwen、未 commit 或 push。
+
 ## 2026-08-11 VLM bounded output 与截断 fallback
 
 - 收紧 Multi-Image Prompt 和 Parser：object verdict 使用最小字段；behavior 只允许 confirmed 携带有限证据；`new_findings` 限制为最多 8 条，并在 Parser 中拒绝与 detector/已接收 finding 高 IoU 的重复框。

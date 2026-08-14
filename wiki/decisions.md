@@ -294,6 +294,15 @@
 - 预算：primary 3000 tokens、fallback 1800 tokens、VLM timeout 300 秒、Runtime 总安全预算 600 秒。该预算由配置管理，不在 Provider 内写死正式环境值。
 - 可观测性：primary/fallback passes 与 metrics 记录 `response_truncated`；截断或 parse failure 的完整 raw response 只写 Runtime debug artifact，不进入 Competition external schema。
 
+### D048：项目进入 integration-ready，复用 RuntimePipeline 作为产品 API
+
+- 日期：2026-08-11
+- 状态：feature complete / integration ready；禁带品、垃圾、四类行为和 32B 完整链路已在 Thor 真实验收达到当前交付要求。
+- API：不新增第二套 facade 或服务。`RuntimePipeline` 是唯一推理内核，并通过 `wrc_park_vision.runtime` 稳定导出；实例长驻复用，`process()` 接受图片路径、PIL frame 或 `ValidatedImage`，`RequestContext` 携带 camera/session/frame metadata。
+- 产品输出：`build_competition_response()` 是 product-facing V1 adapter；产品 transport 只包装其结果，不重新实现 Review/Fusion。使用 compact truncation fallback 的 completed result 必须标记 `degraded=true`。
+- 配置：tracked templates 使用已验收 alias `qwen-vl`；机器路径、endpoint、API key 和 local YAML 不进入 Git。项目版本进入 `1.0.0`。
+- 边界：ROS2/HTTP/gRPC transport、tracking、多帧 behavior、pose/区域增强和 TensorRT 专用 backend 是后续扩展，不阻塞当前单帧交付。
+
 ## 被替代的历史方案
 
 - 早期 YOLO11n 环境验证：已完成，仅保留历史意义。

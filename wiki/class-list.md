@@ -22,7 +22,7 @@
 - 使用 `kick_scooter`，不再使用早期文档中的 `kids_scooter`。
 - 精确最终图片数量、各类分布和实际训练版本，以 3090 的 `datasets_final/prohibited_items/data.yaml`、`manifest.csv` 和 README 为准。
 - 当前文档不编造 Mac 无法验证的最终每类统计。
-- `roller_skates` 和 `barbecue_grill` 当前可能仍为 0 样本或待补充；它们保留在比赛类别定义中，但训练可用性必须以 3090 实际文件为准。
+- Runtime 正式配置和 Thor 验收均使用完整 8 类；训练数据历史统计仍以 3090 实际文件为准。
 
 ### 历史 6 类版本
 

@@ -12,7 +12,9 @@
 
 - [[current-status]]：项目现在处于什么阶段、已完成什么、下一步是什么。
 - [[competition-rules]]：比赛任务、计分风险和视觉系统约束。
-- [[architecture]]：共享多模型 Runtime、单次 Multi-Image VLM、accuracy-first 安全预算和 Thor 交付架构。
+- [[architecture]]：integration-ready 多模型 Runtime、bounded Multi-Image VLM、Fusion 与产品 adapter。
+- [[integration-guide]]：产品 Python API、Thor smoke test 和 failure/degraded 处理。
+- [[deployment-checklist]]：交付部署和半年后恢复开发的最短检查清单。
 - [[decisions]]：当前有效决策，以及被新方案替代的历史决策。
 - [[open-questions]]：真正尚未确认、不能自行假设的问题。
 - [[class-list]]：独立禁带品/垃圾 detector 的 class id、task group 和不文明行为定义。

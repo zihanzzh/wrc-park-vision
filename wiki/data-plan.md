@@ -1,15 +1,15 @@
 # Data Plan
 
-本文件记录正式数据入口、当前训练计划和数据治理历史。类别见 [[class-list]]，当前状态见 [[current-status]]。
+本文件记录正式数据入口、已完成训练的数据治理背景和历史计划。类别见 [[class-list]]，当前交付状态见 [[current-status]]。
 
 ## 当前数据策略
 
-当前不再合并禁带品和垃圾 labels。两个经过人工检查、相对可靠的数据集分别训练独立 YOLO11m：
+当前不再合并禁带品和垃圾 labels。两个经过人工检查的数据集曾作为独立训练入口：
 
 - `datasets_final/prohibited_items/data.yaml`
 - `datasets_final/garbage/data.yaml`
 
-数据正确性和可交付性优先于构建单一训练集。两个模型通过共享 Runtime Pipeline 合并业务结果，不通过重写原始 class id 合并数据。
+数据正确性和可交付性优先于构建单一训练集。当前交付 Runtime 使用 YOLO-World 负责 prohibited/behavior auxiliary proposals，已训练 YOLO11m 负责 garbage；类别仍不通过重写原始 class id 合并。
 
 ## Unified Detection 状态
 
@@ -27,12 +27,7 @@
 
 正式入口：`datasets_final/prohibited_items/data.yaml`。
 
-完整比赛类别映射见 [[class-list]]。当前需要特别核对：
-
-- `roller_skates` 是否已有有效样本。
-- `barbecue_grill` 是否已有有效样本。
-- 两类可能仍为 0 样本或待补充，不能仅因它们出现在 `data.yaml` 就假设已有训练数据。
-- 精确图片数、bbox 数和 train / val / test 分布以 3090 的 `manifest.csv`、README 和实际目录为准。
+完整比赛类别映射见 [[class-list]]。Runtime 正式 8 类已经通过当前 YOLO-World 配置和 Thor 验收；历史训练数据的精确图片数、bbox 数和 split 分布仍以 3090 的 manifest/README 为准，不影响当前 Runtime 类别 contract。
 
 训练产物属于独立 prohibited_items detector，不与垃圾 class id 混合。
 
@@ -53,7 +48,9 @@
 
 现有 label 第一列与最终 Roboflow `data.yaml` 对应，不重新映射。
 
-## 两个模型的训练计划
+## 历史训练计划
+
+以下内容保留用于理解 3090 训练资产来源，不是当前待执行工作。正式 Runtime 已进入 integration-ready，本轮不重新训练。
 
 共同基础权重：`yolo11m.pt`。
 
@@ -87,12 +84,12 @@
 
 - `yolo11m.pt`：当前两个训练任务的预训练起点，不是最终自定义权重。
 - `yolo26n.pt`：旧测试或备用预训练权重，不属于当前主线，暂不删除。
-- `prohibited_items_yolo11m_best.pt`：计划中的禁带品自定义最佳权重。
-- `garbage_yolo11m_best.pt`：计划中的垃圾自定义最佳权重。
+- `prohibited_items_yolo11m_best.pt`：历史独立禁带品训练产物候选；当前正式 proposal layer 使用 YOLO-World。
+- `garbage_yolo11m_best.pt`：垃圾自定义权重的历史建议名；交付使用的真实文件名和 SHA256 应写入 release manifest。
 
 训练权重、runs 和 TensorRT engine 不提交 GitHub。在确认训练产物和用途后，再单独整理旧权重。
 
-## 训练前验收
+## 历史训练前验收规则
 
 两个训练任务分别检查：
 

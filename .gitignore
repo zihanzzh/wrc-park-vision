@@ -28,6 +28,8 @@ configs/runtime.yolo-world.local.yaml
 datasets_raw/
 datasets_clean/
 datasets_stage/
+datasets/
+datasets_final/
 data/
 data/raw/*
 data/images/*
@@ -49,8 +51,10 @@ data/exports/*
 
 # Model weights and exported model files
 weights/
+models/
 *.pt
 *.pth
+*.safetensors
 *.onnx
 *.rknn
 *.engine
@@ -62,6 +66,8 @@ runs/
 outputs/
 experiments/
 runtime_outputs/
+previews/
+vlm_raw_response.txt
 
 # Logs
 *.log
@@ -70,6 +76,5 @@ runtime_outputs/
 *.zip
 
 test_images/
-runtime_outputs/
 
 *.egg-info/

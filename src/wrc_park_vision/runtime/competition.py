@@ -103,7 +103,7 @@ def build_competition_response(
     *,
     adapter_duration_ms: float = 0.0,
 ) -> CompetitionResponse:
-    """Map final fused observations to the provisional competition SDK V1 schema."""
+    """Map final fused observations to the product-facing Competition V1 schema."""
     objects: list[CompetitionObject] = []
     behaviors: list[CompetitionBehavior] = []
     for observation in response.observations:
@@ -144,7 +144,11 @@ def build_competition_response(
         )
 
     status = "failed" if response.status in {"failed", "failure"} else response.status
-    degraded = status != "success" or bool(response.errors)
+    fallback_used = bool(
+        response.review.metrics is not None
+        and response.review.metrics.fallback_attempted
+    )
+    degraded = status != "success" or bool(response.errors) or fallback_used
     return CompetitionResponse(
         request_id=response.request_id,
         frame=CompetitionFrame(

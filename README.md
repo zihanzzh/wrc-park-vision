@@ -1,125 +1,178 @@
-# wrc-park-vision
+# WRC Park Vision
 
-WRC 园区管理岗视觉识别项目。仓库同时作为 Obsidian vault，维护正式 Runtime、配置、自动测试、架构决策和项目记忆。
+WRC 园区管理岗视觉识别 Runtime。当前开发状态为 **feature complete / integration ready**：禁带品、垃圾和四类不文明行为已在 NVIDIA Jetson AGX Thor 上完成真实 accuracy-first 验收。
 
-## 当前主线
+## 最终数据流
 
-- 当前单帧 Runtime 使用 YOLO-World 检测禁带品和行为辅助对象，使用独立 YOLO11m 检测垃圾。
-- 同一张图片由共享 Runtime 顺序交给所有 enabled task modules。
-- YOLO-World 不负责垃圾；配置和 backend 都会拒绝其输出 `task_group: garbage`。
-- 模型结果统一为稳定 schema，并保留各自 `task_group`、类别、置信度、坐标和来源模型。
-- 跨任务高 IoU 结果不会被擅自删除，只会保留并标记冲突。
-- 正式 VLM 为 Qwen2.5-VL-32B；每张图片只发送一次请求，内容包含原始图片和最多 5 个候选驱动的重点 crops；接近全图的 crop 不重复发送。
-- accuracy-first policy 通过 `review.candidate_selection.review_all_task_groups` 强制审核全部 `garbage` / `prohibited_items` detections；behavior 基础对象不做无条件全量审核。
-- corrected 继续复用 YOLO bbox；VLM 新 finding 必须返回相对原图的 normalized bbox，不再使用 crop-local 坐标。
-- Fusion 跨 YOLO 和统一 VLM findings 做同类 IoU 去重；不同类别高 IoU 结果保留并标记冲突。
-- 单图 Behavior Pipeline 根据基础对象生成候选，并由同一次多图 Review 确认四类不文明行为；没有基础对象时仍允许从原图发现明显行为。
-- 正式目标改为 accuracy-first；300 秒总预算和 180 秒 VLM timeout 仅作安全保护。TensorRT backend、正式 Thor 部署包、API、ROS2、tracking 和多帧行为判断尚未实现。
+```text
+image / camera frame
+  -> RuntimePipeline
+  -> YOLOv8s-WorldV2 + YOLO11m garbage detector
+  -> Behavior Candidate Generation
+  -> Accuracy-first Review Policy
+  -> Multi-Image Qwen2.5-VL-32B
+  -> deterministic Fusion
+  -> PipelineResponse
+  -> Competition Response Adapter
+  -> competition_result.json
+```
 
-正式数据和训练产物只保存在 3090 Linux 工作站，不进入本仓库。两个已训练 detector 已完成 macOS 与 Thor 实际运行验证；Thor 已使用 Qwen2.5-VL-32B 跑通 Runtime V3 单次多图行为链路，当前重点是复测全量 object review 对高置信 false positive 的拒绝效果。
+核心职责分层：Detector 是 proposal / localization layer，32B VLM 是 semantic verification + behavior reasoning layer，Fusion 是 deterministic final decision layer。正常帧只发送一次 VLM 请求；明确截断时最多追加一次 compact fallback。
 
-## Runtime 结构
+## 产品 Python API
 
-- `configs/runtime.example.yaml`：可提交的运行配置示例。
-- `src/wrc_park_vision/runtime/`：Pipeline、schema、backend、task module、行为候选、融合、review、输出和 CLI。
-- `src/wrc_park_vision/runtime/review/`：Review 策略、候选选择、重点 crop 生成和单次多图请求结构。
-- `src/wrc_park_vision/runtime/vlm/`：单次多图 Review provider、Prompt Builder 和共享 Response Parser。
-- `tests/runtime/`：不依赖真实权重的自动测试。
-- `runtime_outputs/<request_id>/result.json`：结构化结果。
-- `runtime_outputs/<request_id>/competition_result.json`：面向机器人接口的精简 Competition SDK Response V1。
-- `runtime_outputs/<request_id>/preview.jpg`：直接基于同一份最终结果绘制的预览图。
+产品代码应长驻一个 `RuntimePipeline`，不能每帧重新初始化模型。现有 Pipeline 就是正式集成 API，没有第二套推理逻辑：
 
-## 环境准备
+```python
+from datetime import datetime, timezone
+from pathlib import Path
 
-Runtime 要求 Python 3.10 或更高版本。本轮实现没有安装或升级依赖。需要正式建立环境时，在仓库根目录执行：
+from wrc_park_vision.runtime import (
+    RequestContext,
+    RuntimePipeline,
+    build_competition_response,
+    load_runtime_config,
+)
+
+config = load_runtime_config(Path("configs/runtime.yolo-world.local.yaml"))
+
+with RuntimePipeline(config) as runtime:
+    result = runtime.process(
+        Path("/path/to/frame.jpg"),
+        context=RequestContext(
+            camera_id="park-camera-01",
+            timestamp=datetime.now(timezone.utc),
+            session_id="robot-session-01",
+            frame_index=42,
+        ),
+    )
+    product_result = build_competition_response(result)
+    product_json = product_result.model_dump(mode="json")
+```
+
+`process()` 也接受 `PIL.Image.Image` 或内部 `ValidatedImage`，适合相机帧内存调用。内存帧不会自动写临时图片；如需生成 `preview.jpg`，应传入可读取的图片路径。
+
+详细对接说明见 [Integration Guide](wiki/integration-guide.md)。
+
+## Thor / 本地 CLI
+
+CLI 与 Python API 共用同一个 `RuntimePipeline`：
+
+```bash
+python -m wrc_park_vision.runtime.cli \
+  --config configs/runtime.yolo-world.local.yaml \
+  --image test_images/example.jpg
+```
+
+默认生成 `result.json`、`competition_result.json` 和 `preview.jpg`。可使用 `--no-preview`、`--output-dir` 或 `--output-mode both|internal|competition`。退出码：`0` 成功、`2` 部分成功、`1` 失败。
+
+## 正式配置与模型
+
+Tracked deployable templates：
+
+- `configs/runtime.example.yaml`
+- `configs/runtime.yolo-world.example.yaml`
+
+Machine-specific config：
+
+- `configs/runtime.yolo-world.local.yaml`，由 `.gitignore` 排除。
+- 权重路径、endpoint、API key 和设备参数不得写入 tracked template。
+
+正式环境：
+
+- Garbage detector：YOLO11m。
+- Object proposals：YOLOv8s-WorldV2 / YOLO-World。
+- Semantic review：`Qwen2.5-VL-32B-Instruct-AWQ`。
+- vLLM served model alias：`qwen-vl`。
+- 目标硬件：NVIDIA Jetson AGX Thor Developer Kit，Docker + vLLM。
+- 宿主机模型目录：`models/Qwen2.5-VL-32B-Instruct-AWQ`。
+- 容器内模型目录：`/models/Qwen2.5-VL-32B-Instruct-AWQ`。仓库没有固化具体 Docker 启动命令；部署时必须使用已验收环境的挂载参数，使上述容器路径成立。
+- 策略：accuracy-first。600 秒 Runtime 总预算和 300 秒 VLM timeout 是安全上限，不是 `<10 seconds` 验收目标。
+- Token：primary 3000，compact fallback 1800。
+
+启动 Runtime 前检查 vLLM：
+
+```bash
+curl http://127.0.0.1:8000/v1/models
+```
+
+响应必须包含 `qwen-vl`，且 local YAML 的 `WRC_VLM_MODEL_ID` 必须一致。
+
+## 正式类别
+
+类别真源为 `configs/runtime.yolo-world.example.yaml` 与 detector 权重 metadata。
+
+Prohibited items（8 类）：
+
+1. `spray_can`
+2. `portable_gas_stove`
+3. `megaphone`
+4. `skateboard`
+5. `kick_scooter`
+6. `speaker`
+7. `roller_skates`
+8. `barbecue_grill`
+
+Garbage（6 类）：
+
+1. `crumpled_paper_ball`
+2. `disposable_food_container`
+3. `empty_cigarette_box`
+4. `plastic_drink_bottle`
+5. `plastic_food_wrapper`
+6. `rigid_takeout_bag`
+
+Behavior auxiliary objects：`person`、`bench`、`grass`、`cigarette`、`vehicle`。
+
+正式 behaviors：`trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。
+
+## Output contracts
+
+### Runtime `PipelineResponse`
+
+用于 debug、audit 和 pipeline inspection，包含 module status、最终 observations、Detection Summary、VLM review、Fusion decisions、issues/errors、timings 和 request metrics。CLI 的 `result.json` 是该结构的 JSON 形式。
+
+### Competition / Product `CompetitionResponse`
+
+用于机器人和产品集成，固定包含：
+
+- `frame`：`frame_id`、timestamp、width、height。
+- `status`：`success`、`partial_success` 或 `failed`。
+- `objects`：最终 object ID、task group、class、pixel/normalized bbox、confidence、review status、source。
+- `behaviors`：四类正式行为、confidence、evidence object IDs。
+- `processing_time_ms`。
+- `degraded`。
+
+`objects` 当前可能包含 `prohibited_items`、`garbage` 和 `uncivilized_behavior` 辅助对象。只有 Fusion 后仍有效的 observations 会进入 product response；rejected proposal 不会输出。
+
+## Failure semantics
+
+- 单个 YOLO module 失败：隔离该模块；若其他模块成功，返回 `partial_success`，结果仍可作为 detector fallback 使用，但产品应记录并报警。
+- VLM 请求或解析失败：按 `review_failure_policy` 保留并标记 required detector proposals，返回 `partial_success` / `degraded=true`。
+- Primary 截断：自动进行一次 compact fallback；成功时 object/behavior decisions 继续 Fusion，`new_findings=[]`，Review 保持 completed，但 product response 为 `degraded=true`。
+- Fallback 再失败：不重试，进入既有 review failure policy。
+- `failed`：输入无效或没有成功 detector module，产品不应把结果当作有效识别结果。
+- Preview 失败不删除已生成的结构化推理结果，但应记录 output error。
+
+## 安装与验证
+
+Python 要求 3.10+：
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[ultralytics,yolo-world,dev]"
-```
-
-本地绝对权重路径写入环境变量或 gitignored 的 `configs/runtime.local.yaml`，不要写进 `runtime.example.yaml`。建议将权重放在本地 `models/`：
-
-```text
-models/yolov8s-worldv2.pt
-models/garbage_yolo11m_best.pt
-```
-
-`.pt` 已被 `.gitignore` 忽略。
-
-## 单图运行
-
-```bash
-cp configs/runtime.example.yaml configs/runtime.local.yaml
-export WRC_YOLO_WORLD_MODEL_PATH="$PWD/models/yolov8s-worldv2.pt"
-export WRC_GARBAGE_MODEL_PATH="$PWD/models/garbage_yolo11m_best.pt"
-
-python -m wrc_park_vision.runtime.cli \
-  --config configs/runtime.local.yaml \
-  --image /absolute/path/to/test-image.jpg
-```
-
-可用 `--no-preview` 禁用预览，或用 `--output-dir` 覆盖输出目录。`--output-mode both|internal|competition` 可同时输出两种 JSON，或只输出指定协议；competition 模式不生成 Preview，以便先返回机器人响应。退出码为：`0` 表示全部模块成功，`2` 表示部分成功，`1` 表示失败。
-
-Runtime 在启动时校验 enabled 模块的模型路径，模型不存在会明确失败，不会触发自动下载。`device: auto` 优先选择 CUDA，其次 MPS，最后 CPU。
-
-固定类别的 enabled detection module 必须配置有序 `expected_class_names`。垃圾 YOLO11m 权重加载后会在处理图片前严格校验 class ID 连续性、类别数量、名称和顺序，避免错误权重静默进入 Runtime。可选 `visual_class_guidance` 为这些固定类别提供正向结构与误报排除规则。YOLO-World 使用分组 `open_vocabulary_classes`，当前只允许 `prohibited_items` 与 `uncivilized_behavior` 基础对象。
-
-正式 example 配置启用 Qwen2.5-VL-32B，使用 `http://127.0.0.1:8000/v1/chat/completions` 和可配置 served model alias。Runtime V3 每张图片只调用一次 provider：请求同时携带原始图片、紧凑 Detection Summary、行为候选和最多 5 个重点 crops。全部 garbage / prohibited detections 都进入同一次请求；behavior 基础对象仍按低置信、跨模型冲突、小目标和行为候选选择。面积达到原图 90% 的 crop 会跳过。VLM 图片最长边为 1024 像素、JPEG quality 90，bbox 始终保持原图坐标；multi-image/provider timeout 均为 180 秒，max tokens 为 1200。失败时 required detector 结果按 review failure policy 保留并标记，顶层状态降级为 `partial_success`。
-
-Preview 只读取最终 `PipelineResponse`：YOLO、VLM corrected 和 Multi-Image finding 都使用最终 observation 中的同一份 bbox，不重新计算或推理；无 geometry 的行为结果保留在 JSON，不扩展预览画布。`Observation.track_id` 已作为可空字段写入 schema，但当前没有实现 Tracking 或多帧融合。
-
-## Competition SDK Response V1
-
-内部 `result.json` 继续保留 modules、Detection Summary、Review、Fusion、timing 和 errors。独立 adapter 将 Fusion 后仍有效的 observations 转为精简 `competition_result.json`：
-
-- `frame`：当前 `frame_id`、timestamp、宽高。
-- `objects`：最终类别、pixel/normalized bbox、明确 confidence、review status 和来源。
-- `behaviors`：行为类别、confidence 和 evidence object IDs。
-- `status` / `degraded`：VLM 超时、解析失败或 deadline 降级会明确标记，不隐藏为成功。
-
-confirmed/corrected 在 VLM confidence 存在时使用该 confidence；detector-only、uncertain 和 review_failed 使用 detector confidence，不对两个数值做无依据平均。该字段结构根据目前已知要求设计；拿到官方 SDK 文档后可通过 adapter 对字段名和坐标格式做最终映射。
-
-## Thor accuracy-first 验证
-
-10 秒性能目标已取消。Thor 验证优先检查 VLM 实际完成、`review.status=completed`、结果非 degraded，以及 object/behavior 语义和 JSON/Preview/Competition 输出一致；脚本仍记录完整 timing，但不再用固定延迟阈值判定通过。Thor 上使用：
-
-```bash
-python scripts/runtime/benchmark_thor.py \
-  --config configs/runtime.yolo-world.local.yaml \
-  --image /absolute/path/to/grass_garbage_002.png \
-  --warmup-runs 1 \
-  --runs 5 \
-  --output runtime_outputs/thor_benchmark.json
-```
-
-工具先检查 `/v1/models` readiness，复用同一个 `RuntimePipeline`，单独报告模型初始化和 warmup，并记录 detector、图像编码、payload、token、HTTP round trip、解析、Fusion 和 Competition adapter 指标。只有每次 VLM 完成且结果非 degraded 才通过验证。
-
-Thor 当前模型 root 为 `/models/Qwen2.5-VL-32B-Instruct-AWQ`，实际 `served-model-name` 为 `qwen-vl`；Thor 的 `WRC_VLM_MODEL_ID` 必须保持与该 alias 一致。实测前继续检查 `max_model_len`、`gpu_memory_utilization`、视觉输入限制、CPU offload、模型是否重复初始化，以及服务日志中的 fallback kernel 或兼容性警告。正式配置启用 `response_format: json_object`，需确认当前 vLLM 支持该参数。
-
-## 自动测试
-
-安装 dev extra 后运行：
-
-```bash
-pytest
-```
-
-测试使用 FakeBackend，不需要权重，也不会运行 YOLO。也可以使用标准库入口：
-
-```bash
 python -m unittest discover -s tests -t . -v
 ```
 
+不要把数据集、权重、32B 模型、runtime outputs、preview 或 raw VLM response 提交到 Git。
+
 ## 文档入口
 
-- `PROJECT_CONTEXT.md`：项目背景、当前阶段和职责边界。
-- `AGENTS.md`：Codex / agent 长期工作规则。
-- `wiki/content-map.md`：Obsidian/wiki 导航。
-- `wiki/current-status.md`：最新状态和下一步。
-- `wiki/architecture.md`：正式多模型 Runtime 架构和后续扩展方向。
-- `wiki/decisions.md`：已确认决策。
-- `wiki/open-questions.md`：仍待确认的问题。
-
-默认使用中文沟通和维护文档，不自动 commit、push 或 deploy。
+- [Project Context](PROJECT_CONTEXT.md)
+- [Integration Guide](wiki/integration-guide.md)
+- [Deployment Checklist](wiki/deployment-checklist.md)
+- [Architecture](wiki/architecture.md)
+- [Current Status](wiki/current-status.md)
+- [Decisions](wiki/decisions.md)
+- [Hardware Notes](wiki/hardware-notes.md)

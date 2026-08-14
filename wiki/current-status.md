@@ -1,200 +1,47 @@
 # Current Status
 
-## 2026-08-11 VLM bounded output 与截断 fallback
+## 2026-08-11 Final engineering closure
 
-- Thor 真实 32B 请求在 16 个 required reviews、6 张图、`max_tokens=3000` 时仍以 `finish_reason=length` 截断。根因不是 detector 审核条目本身，而是旧协议允许 `new_findings` 无上限、behavior 对无事件输出冗余否定项，以及 object review 携带 reasoning/confidence 等自由文本，输出规模无法预先约束。
-- 正常 Multi-Image 请求改为严格有界协议：每个 required object 恰好一条最小 verdict；只有 corrected 可增加 task/class；behavior candidate 逐一返回最小 verdict，只有 confirmed 可带 bbox、confidence 和一句不超过 96 字符的证据；主动行为扫描只返回 confirmed；`new_findings` 最多 8 条且不得与 detector 或其他 finding 高 IoU 重复。
-- 输出优先级固定为 `yolo_reviews`、`behavior_reviews`、`new_findings`；Parser 不依赖 key 顺序，并拒绝 object review 的 reasoning/confidence/bbox 等额外字段。
-- 正常成功仍只有一次 VLM HTTP 请求。若 primary 明确 `finish_reason=length` 或 JSON 明显因截断未闭合，最多自动执行一次 compact fallback，复用同一原图和 crops，只请求所有 required object 与 behavior decisions，完全关闭 missed-object scan。
-- fallback 成功时 Review 保持 `completed`，object/behavior decisions 正常进入 Fusion，`new_findings=[]`，并以 `primary_response_truncated` / `missed_object_scan_skipped` issue 及 primary/fallback passes、metrics 标记降级原因；fallback 不完整或再次失败后才进入既有 `review_failure_policy`。
-- primary/fallback `max_tokens` 分别为 3000/1800，VLM timeout 为 300 秒，Runtime 总安全预算为 600 秒；正式 32B、garbage/prohibited 全量审核、六类垃圾指南、八类禁带品和四类行为主动扫描均保留。
-- primary 截断或任意 parse failure 的完整原始文本会单独写入请求目录的 `vlm_raw_response.txt`；该调试内容排除在内部结果序列化和 Competition Response 之外。
-- gitignored 的 `configs/runtime.yolo-world.local.yaml` 已同步上述通用策略，同时保留现有模型路径、endpoint、API key 环境变量和 served model alias 等机器配置。
-- 自动验证：全部 Runtime `unittest` 155 项、`compileall`、`git diff --check`、两个 example 与 gitignored local 配置 validation 均通过；真实 Thor 32B 尚待复测。
+项目状态：**feature complete / integration ready**。
 
-## 2026-08-10 Object Review accuracy-first policy
+### 真实验收
 
-- Thor 已使用 `Qwen2.5-VL-32B-Instruct-AWQ` 跑通 person + grass detection、`trampling_grass` candidate、32B confirmation、behavior bbox、Parser、Fusion `add_behavior`、Preview 和 Competition output。
-- 真实测试发现 `crumpled_paper_ball` false positive：一个高置信 detection 未进入旧 Candidate Selector 而直接保留，另一个虽经 Review 仍被错误 confirmed。
-- `review.candidate_selection.review_all_task_groups` 当前正式配置为 `[garbage, prohibited_items]`；两组每一条 detector observation 都是 required review，不受 confidence、尺寸或 conflict 影响，并继续共用每图一次 Multi-Image 32B 请求。
-- `uncivilized_behavior` 的 person / grass / bench / cigarette / vehicle 不做无条件全量审核，继续使用低置信、小目标、冲突和 behavior candidate evidence 规则；四类行为主动全图扫描保持不变。
-- 固定类别 detector 新增配置化 `visual_class_guidance`。六类 garbage 的正向结构和 false-positive 排除规则会按本次 required classes 进入 Prompt；`crumpled_paper_ball` 明确排除草地纹理、石头、衣物、身体部位、阴影、袋子、塑料物体和背景斑块。
-- Prompt 明确 detector label/confidence 不是语义真值；每个 required detection 必须恰好返回一个 verdict。confirmed/corrected 继续复用 YOLO bbox，只有 `new_findings` 需要 VLM bbox。
-- Parser 与 Fusion 主逻辑未改：missing / duplicate required decision 继续产生明确 issue；缺项或失败按 review failure policy 标记，rejected 删除，corrected 修改 task/class 并保留 YOLO geometry。
-- Thor 实际 served model alias 为 `qwen-vl`，模型 root 为 `/models/Qwen2.5-VL-32B-Instruct-AWQ`；local YAML 继续通过 `WRC_VLM_MODEL_ID` 保留机器值，不回退 7B。
-- 自动验证：全部 Runtime `unittest` 148 项、`compileall`、`git diff --check`、两个 example 与 gitignored local 配置 validation 均通过；本轮未调用真实 YOLO/Qwen。
+- NVIDIA Jetson AGX Thor + Docker + vLLM 已正常运行 `Qwen2.5-VL-32B-Instruct-AWQ`，served alias 为 `qwen-vl`。
+- `prohibited_items`、`garbage`、`uncivilized_behavior` 已完成真实测试，整体准确率达到当前交付要求。
+- YOLO / YOLO-World → Behavior Candidates → Accuracy-first Review → 32B → Fusion → Runtime JSON → Competition JSON → Preview 全链路已跑通。
+- 所有 garbage / prohibited detector proposals 均经过 32B review；四类 behavior 保持完整。
+- Bounded output protocol 与单次 truncation fallback 已完成并通过真实链路验证。
+- 正式策略为 accuracy-first，不再以 10 秒作为最终要求。
 
-## 2026-08-03 当前正式方案
+### 产品集成状态
 
-- 正式 VLM 从 Qwen2.5-VL-7B 切换为 Qwen2.5-VL-32B，alias 为可配置的 `qwen-vl-32b`；每张图片仍只有一次 Multi-Image 请求。
-- 10 秒正式性能目标已取消。当前优先级为物体准确率、跨模型冲突裁决、四类行为准确率和输出协议稳定性；300/180 秒 timeout 仅作安全保护。
-- behavior candidate 必须在 `behavior_reviews` 中逐一返回 decision；缺 section、空数组、部分覆盖和重复 candidate 均产生结构化 issue。
-- confirmed behavior 仍必须提供原图 normalized bbox，缺失或非法 bbox 不进入最终 observations、Preview 或 Competition behaviors。
-- 正式输入参数为最长边 1024、JPEG quality 90、最多 5 crops、max tokens 1200；Fusion 与 Competition Adapter 无需修改。
-- 自动验证：全部 Runtime `unittest` 140 项、`compileall`、`git diff --check` 和 32B config validation 均通过；真实 Thor 32B 尚未运行。
+- `RuntimePipeline` 是唯一推理入口；初始化时加载模型并支持连续复用。
+- `process()` 接受图片路径、PIL frame 或内部 `ValidatedImage`。
+- `RequestContext` 支持 camera、timestamp、session、frame index。
+- `build_competition_response()` 提供稳定的 product-facing V1 adapter。
+- CLI 与 Python API 共用同一 Pipeline，没有两套逻辑。
+- `wiki/integration-guide.md` 与 `wiki/deployment-checklist.md` 已作为交付和恢复入口。
 
-## 当前阶段
+### 正式模型栈
 
-禁带品与垃圾两个独立 detector 已完成训练，并已在 macOS 和 NVIDIA Thor 上跑通检测链路。YOLO-World backend、单图 Behavior Pipeline 和 Qwen2.5-VL Review 已接入共享 Runtime；Thor 上已跑通 32B Runtime V3 单次多图行为链路，当前进入物体 false-positive accuracy-first 加固与复测。
+- YOLO11m garbage detector。
+- YOLOv8s-WorldV2 / YOLO-World object proposal。
+- Qwen2.5-VL-32B-Instruct-AWQ semantic review。
+- NVIDIA Jetson AGX Thor、Docker、vLLM。
 
-本轮已完成代码实现与 mock 自动测试，没有运行真实 Qwen2.5-VL、训练模型、修改数据集、安装依赖或 push。
+### 配置与协议
 
-## Behavior 主动全图扫描与定位
+- Tracked example 的 alias 已统一为真实 `qwen-vl`。
+- Machine-specific local YAML、endpoint、API key、路径继续 gitignored。
+- Runtime 总预算 600 秒；VLM timeout 300 秒；primary/fallback token 为 3000/1800。
+- Runtime contract 用于 debug/audit；Competition contract 用于产品集成。
+- Fallback 成功时 Review completed，但 Competition `degraded=true`，明确表示 missed-object scan 未完成。
 
-- 四类正式行为保持不变：`trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。
-- object-based candidate 继续保留，但 behavior enabled 时，同一次 Multi-Image VLM 请求会对每张图片主动扫描四类行为；不再要求 YOLO-World 必须先检出 `grass` 或 `cigarette`。
-- YOLO-World 行为辅助词汇已扩展到 person / people / human / pedestrian、grass / lawn / turf / green area、cigarette / smoker / smoking / cigarette smoke、vehicle / car / truck / bus / parking、bench / park bench / seat。它们只生成 object proposals，不直接判定行为。
-- Behavior 配置新增可选 `decision_rules` 和向后兼容的 `require_bbox`。当前 example 与 YOLO-World local 配置要求 confirmed behavior 返回原图 normalized bbox。
-- VLM Prompt 明确 detector 只是建议；对必审 detection 可执行 `rejected` / `corrected`，并可在没有 candidate 时直接新增 confirmed behavior。
-- confirmed behavior bbox 经校验、裁剪和原图映射后进入 Runtime observation 与 Preview；Competition Response V1 的 behavior 字段结构保持不变。
-- `spray_can` false positive 已增加回归测试：VLM 明确 rejected 后，错误 `spray_can` 不进入最终 observations。
-- 自动测试：135 项 Runtime `unittest` 通过；尚未用真实吸烟、踩踏草坪和正常公园图片验证 Qwen 语义准确率。
+### 当前非 blocker 扩展
 
-## Runtime V3 Thor Review 性能优化
+- 机器人最终 transport 封装（ROS2/HTTP/gRPC）。
+- Tracking、多帧 behavior、pose、区域关系增强。
+- TensorRT 专用 backend 与进一步资源优化。
+- 正式部署包补录权重 SHA256、Thor 软件版本和已验收 vLLM 启动参数。
 
-- Thor 最新真实链路已确认 detection、单次 multi-image Review、vLLM 通信和 JSON Parser 均可运行，不再存在 HTTP timeout。
-- 当前实测约为：Runtime total 17.9 秒、单独模型初始化 6.6 秒、detection 1.3 秒、Review / HTTP round trip 16.4 秒。
-- 当前请求为 4 张图片、8 个 required reviews；endpoint 报告 prompt 5106 tokens、completion 700 tokens、`finish_reason=length`。主要失败变为输出达到上限后 JSON 被截断。
-- 本轮只优化 `vlm/prompt.py` 和对应测试，不修改 Pipeline、Fusion、Parser、schema 或 Runtime interface。
-- Prompt 中 detections 已严格过滤为 required IDs；非 required detection 由 Runtime 自动保留，不再发送给 VLM。
-- 视觉指南只保留必审类别、其冲突类别和四类行为判断所需基础对象；完整允许类别名称仍以紧凑目录保留，确保 VLM 可以报告漏检。
-- candidate reasons 合并进必审 detection，独立 candidate catalog 已移除；crop metadata 只保留 crop ID、原图 bbox 和关联 ID。
-- findings 不再被要求输出可由 Parser 确定的 `review_pass` / `geometry_source`；所有输出禁止 reasoning、null 和多余字段。
-- 代表性 8 必审项、3 crops、16 detections 输入中，Prompt 从 9,029 字符降至 4,281 字符，减少 52.6%。真实 token 与延迟必须在 Thor 复测，因为 endpoint 的 prompt tokens 还包含视觉 token。
-- `response_format={"type":"json_object"}` 的配置与请求实现已有测试覆盖，但仓库无法确认 Thor 当前 vLLM 版本支持，因此未擅自启用。
-
-## Runtime V3 收尾
-
-- 未被 Candidate Selector 选中的 detection 现在保持 `review.required=false`，Fusion 使用 `keep_detector_result`，不再误标为 missing / review failed。
-- required observation 若 VLM 请求失败、解析失败或缺项，才使用 `keep_review_failed`；缺少必审项会令顶层结果降级为 `partial_success`。
-- Preview 继续只绘制 Fusion 后 observations，并用 task group 正常色、corrected、uncertain、review_failed 和 unresolved conflict 状态色区分结果；rejected 不作为有效框绘制。
-- 新增独立 Competition SDK Response V1 adapter 和 `competition_result.json`，不压缩或替代内部 `result.json`。协议字段是当前暂定结构，正式 SDK 到位后只调整 adapter。
-- Runtime 从图片处理开始执行 300 秒总安全预算；VLM timeout 取 pass timeout、provider timeout 和剩余预算的最小值，预算不足时不发起 VLM 并明确 degraded。
-- deadline fallback 只用于异常保护。Thor accuracy-first 验证要求 VLM 完成、结果非 degraded，并人工核对语义输出。
-- VLM 请求已增加 prompt、原图/crop 编码、序列化、payload、图像数、token、HTTP round trip、响应长度、解析和 finish reason 指标。
-- VLM 输入最长边 1024、JPEG quality 90；最多 5 个 crops，面积达到原图 90% 的 crop 跳过；max tokens 为 1200。
-- 新增 `scripts/runtime/benchmark_thor.py`，包含 readiness、warmup、至少 5 次 warm runs 与严格非降级验收。本轮没有运行真实 Thor benchmark。
-
-## Runtime V3 单次多图 Review
-
-- V2 的 Full Image + Crop Scan 顺序双请求已从主 Pipeline 移除。
-- Qwen provider 启用时每张图片只执行一次请求，同时发送原始图片和少量重点 crops。
-- Review candidates 包含全部 garbage / prohibited observations，以及按低置信、跨模型冲突、小目标和 behavior candidates 选中的 behavior 基础对象；crop 围绕这些候选扩展、合并，最多保留 5 个，并跳过接近全图的重复 crop。
-- `yolo_reviews` 要求覆盖所有 candidate 引用的 observation；因此 garbage / prohibited detections 必须逐条返回 decision。未被选中的高置信 behavior 基础对象仍可直接保留，完整 Detection Summary 继续用于全图理解、漏检和行为判断。
-- 所有 VLM finding bbox 都使用原图 normalized 坐标；`crop_id` 只表示判断参考，不再执行 crop-local 坐标映射。
-- 同一次响应完成 YOLO review、漏检发现和四类行为判断，继续使用逐项容错 Parser 与现有 Fusion。
-- `review.multi_image`、`candidate_selection` 和 `important_crops` 参数均配置化；V2 配置可迁移为单次 V3 请求。
-- Runtime V3 目前通过 mock 自动测试；300/180 秒安全 timeout 与降级已实现，但 32B 真实 VLM 的 Thor 准确率尚未复测。
-
-## Detection Module 分工 Phase 2
-
-- 单帧 Runtime 保持现有多模块 Pipeline，不重写主流程：同一图片依次进入 YOLO-World object module 和独立 garbage YOLO11m module，输出统一合并为 observations / Detection Summary。
-- YOLO-World 现在只负责正式 8 类禁带品和 `person`、`bench`、`grass`、`cigarette`、`vehicle` 五类行为辅助对象；配置与 backend 均明确拒绝 `task_group: garbage`。
-- 六类垃圾固定由现有 Ultralytics backend 加载 `garbage_best.pt`。权重元数据已核对为 `crumpled_paper_ball`、`disposable_food_container`、`empty_cigarette_box`、`plastic_drink_bottle`、`plastic_food_wrapper`、`rigid_takeout_bag`，顺序为 ID 0 至 5。
-- example 配置表达正式 8 类禁带品；gitignored 的 `runtime.yolo-world.local.yaml` 暂时只启用已验证的 6 类禁带品，并明确保留 `roller_skates`、`barbecue_grill` 的正式定义待后续补齐。
-- Phase 2 当时未修改 Dual Pass、Crop Scan 和 Preview；这些剩余能力现已在最终阶段完成。
-
-## Runtime Review/Fusion Phase 1
-
-- VLM Response Parser 已改为逐项容错：`yolo_reviews`、`new_findings`、`behavior_reviews` 分别解析，非法条目跳过并记录结构化 `ReviewIssue`，合法兄弟条目继续保留。
-- 只有响应完全无法解析为 JSON object 时 Review 才整体失败；缺失、重复或非法 observation/candidate/class 会成为 item-level issue。
-- `rejected` 携带可确定映射的合法纠正类别时规范化为 `corrected`；不从 reasoning 或模糊文本猜测类别。
-- 没有确认行为时 `behavior_reviews: []` 是合法结果；无 candidate 的条目只有明确 `confirmed` 才可接受。
-- Final Fusion 现在对最终 observations 应用语义：`confirmed` 保留，`corrected` 复用原 YOLO bbox 和 confidence 并更新类别，`rejected` 移除，`uncertain` 默认保留并标记。
-- FusionDecision 同时记录 YOLO confidence 与 VLM confidence；Review 整体失败或单条缺失审核时默认 `keep_flagged`，不会静默当作 confirmed。
-- Phase 1 当时没有修改 Pipeline、Preview、Crop 或双 Pass；这些剩余能力现已在最终阶段完成。
-
-## Qwen2.5-VL-7B 历史实测：视觉类别指南
-
-- Thor 上 `Qwen2.5-VL-7B-Instruct-AWQ` 实测：YOLO-World 约 0.87 秒、VLM Review 约 2.61 秒、总时间约 3.50 秒，`status=success`，JSON 可正常解析且每张图片仍只有一次 VLM 请求。
-- 当前主要问题由响应格式和延迟转为细粒度类别准确率：测试中的 `kick_scooter` 曾被 7B 误判为 `skateboard`。
-- YOLO-World 类别配置新增可选 `visual_description` 与 `distinguishing_rules`，Prompt 会为当前启用类别动态生成紧凑视觉指南。
-- 8 类禁带品、6 类垃圾和 5 类行为辅助对象均已补充可见结构定义；重点明确滑板/儿童滑板车、卡式炉/烧烤炉、纸团/塑料瓶/塑料包装等相似类别的差异。
-- `empty_cigarette_box` 和 `rigid_takeout_bag` 的 YOLO-World prompts 已收窄，避免把普通烟盒或宽泛外卖袋直接当作目标。
-- 旧配置不提供视觉定义时仍可加载并构建 Prompt；非 YOLO-World detector 不受影响。
-- 尚未完成禁带品、垃圾和不文明行为三类任务的系统真实图片测试，视觉指南对 Thor 7B 准确率的提升仍需复测确认。
-
-## Qwen2.5-VL-7B 历史实测：Prompt 优化
-
-- Thor 上的 `Qwen2.5-VL-7B-Instruct-AWQ` 已能被 Runtime 成功调用，但旧 Prompt 中的 `"允许的 task_group"` 被 7B 原样复制，导致严格 Parser 拒绝响应。
-- Prompt 已改为紧凑规则、明确枚举和基于本次 observation/candidate 动态生成的合法 JSON 模板，不再把说明文字放入 JSON 字段值。
-- `reasoning` 默认建议为 `null`，必要时只允许极短句，以减少输出 token。
-- Parser 仍严格拒绝非法业务类别，只新增标识符首尾空格清理。
-- Provider 在解析失败时会把最长 512 字符的 VLM 原始响应摘录附加到错误信息，便于 Thor 调试，不改变成功路径。
-- 单次全图 VLM 请求架构保持不变；Thor 7B 已跑通合法 JSON，下一步复测视觉指南对准确率的影响。
-
-## YOLO-World 隔离实验
-
-- 2026-07-21 在分支 `experiment/yolo-world-smoke` 完成单图 YOLO-World v2 smoke test。
-- 使用官方 `yolov8s-worldv2.pt` 和 `set_classes()` 对儿童滑板车测试图运行三组英文 prompts。
-- 单独使用 `kick scooter` 未检出；加入同义词后以 `children's scooter` 检出，置信度约 0.30，bbox 覆盖目标合理。
-- 完整 8 类续测在杂乱露营车图片中正确检出 `spray can`（约 0.54），但漏检仅局部可见的儿童滑板车和重度遮挡 speaker；同图单类别对照也未检出后两者。
-- 该结果只说明开放词汇模型值得继续做更多隔离样本评估，不代表已决定接入正式 Runtime。
-- 实验没有修改 Runtime、正式配置、类别映射、训练代码或数据集。
-
-## Runtime 当前链路
-
-```text
-完整图片
-  -> YOLO-World prohibited_items / behavior object detection
-  -> Ultralytics YOLO11m garbage detection
-  -> Detection Summary + behavior candidates
-  -> 选择低置信、冲突、小目标和行为候选
-  -> 生成/合并最多 5 个重点 crops，并跳过近全图 crop
-  -> Qwen2.5-VL-32B：原图 + crops 的单次 multi-image review
-  -> 原图坐标 finding 与跨来源去重
-  -> Final Fusion
-  -> PipelineResponse
-  -> result.json / preview.jpg
-```
-
-已实现：
-
-- 配置驱动的通用 task modules，当前由 YOLO-World 提供 `prohibited_items` / behavior 基础对象，由独立 Ultralytics YOLO11m 提供 `garbage`。
-- Ultralytics backend 启动时加载一次模型，并严格校验 `expected_class_names`。
-- 单模块故障隔离、稳定 observation ID、跨 task group 冲突保留与标记。
-- Detection Summary，向 VLM 提供 YOLO 语义上下文，但不限制 VLM 的全图观察范围。
-- Qwen2.5-VL 单次多图 provider interface、OpenAI-compatible HTTP provider、统一 Prompt Builder 和逐项容错 Response Parser。
-- VLM 可以确认、拒绝或纠正 YOLO 类别，也可以报告 YOLO 完全漏检的目标；所有新框统一使用原图 normalized 坐标。
-- corrected 不由 VLM 重新定位；VLM 新 finding 必须提供 normalized bbox，最终 geometry 由 Pipeline 生成。
-- Final Fusion 根据 VLM verdict 形成最终 observations，同时在 Detection Summary、Review 和 FusionDecision 中保留可审计的原始检测与双置信度信息。
-- Review 或 Fusion 失败时保留 detector 结果，并返回阶段错误和 `partial_success`。
-- JSON 与 Preview 使用同一个最终 `PipelineResponse`；有 geometry 的 VLM finding 作为正式 observation 绘框。
-- Qwen provider 默认关闭，detector-only 配置继续保持可用；旧双 Pass 配置只迁移参数，不恢复双请求。
-- Behavior Pipeline 根据配置化关系生成候选：`person + grass`、`person + cigarette`、`vehicle`、`person + bench`。
-- candidate 不会直接成为行为；只有 VLM `confirmed` 才生成 `kind: behavior` observation。
-- 即使没有行为基础对象，同一次全图 VLM 请求也允许发现四类明显行为。
-- 最终行为固定为 `trampling_grass`、`smoking`、`blocking_fire_lane`、`standing_or_lying_on_bench`。
-
-当前明确未完成：
-
-- 三类任务的真实 Qwen2.5-VL 系统效果验证。
-- Thor 上 Qwen2.5-VL-32B 真实完成、非 degraded 的 accuracy-first 验收。
-- 多帧 behavior、tracking、pose 和区域关系增强。
-- TensorRT backend、正式 Thor engine 部署与 benchmark。
-- API、ROS2、stream 和 tracking；detector parallel 仅提供配置能力，尚待 Thor GPU 竞争实测。
-
-## 验证状态
-
-- 自动测试：127 项 Runtime `unittest` 通过。
-- Python `compileall`：通过。
-- `git diff --check`：通过。
-- 本轮使用 mock HTTP，确认原图与全部重点 crops 只通过一次请求发送；本轮没有访问真实服务。
-- detector 实际运行：macOS 与 NVIDIA Thor 已跑通。
-- VLM 实际运行：Thor 7B 已完成单次全图 Review 并返回合法 JSON；当前需要复测配置驱动视觉指南的分类准确率。
-- 32B 完整链路：安全 timeout 已配置；真实 VLM 非降级 warm-run 尚未实测，不能宣称 accuracy-first 达标。
-
-## 数据与设备边界
-
-- 正式数据继续只保存在 3090 的 `datasets_final/prohibited_items/` 和 `datasets_final/garbage/`。
-- Mac 不保存正式数据集，不修改 labels。
-- 本地权重和 `configs/runtime.local.yaml` 保持 gitignored。
-- Thor 是最终边缘部署目标；Orange Pi / RK3588 不是当前主线。
-
-## 下一步
-
-1. 在 Thor 上用固定验收图片复测 `skateboard` / `kick_scooter` 等相似类别，记录视觉指南启用前后的准确率与耗时。
-2. 对 8 类禁带品、6 类垃圾和四类不文明行为执行系统真实图片测试。
-3. 人工核对 confirm / reject / correct、Multi-Image finding，以及 JSON 与 Preview 一致性。
-4. 使用 `scripts/runtime/benchmark_thor.py` 预热后连续运行至少 5 次，要求 VLM 全部完成、全部非 degraded，并记录 timing 供后续优化。
-5. 根据真实响应稳定性微调配置中的视觉定义，不放宽 Parser 的业务类别边界。
+历史阶段、7B 实测、旧 10 秒策略和被替代路线见 [[codex-log]] 与 [[decisions]]，不再作为当前状态。
